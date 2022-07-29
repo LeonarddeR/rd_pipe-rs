@@ -1,0 +1,44 @@
+# RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
+# cargo.toml for core crate
+# Copyright (C) 2022 Leonard de Ruijter <alderuijter@gmail.com>
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+
+[package]
+name = "rd_pipe-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.tracing]
+version = "*"
+features = [
+    "log",
+]
+
+[dependencies.windows]
+git = "https://github.com/microsoft/windows-rs"
+version = "*"
+features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_RemoteDesktop",
+]
+
+[dependencies.tokio]
+version = "*"
+features = [
+    "rt-multi-thread",
+    "net",
+    "io-util"
+]

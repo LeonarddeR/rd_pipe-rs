@@ -1,0 +1,36 @@
+# RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
+# cargo.toml for inproc crate
+# Copyright (C) 2022 Leonard de Ruijter <alderuijter@gmail.com>
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+
+[package]
+name = "rd_pipe-inproc"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+rd_pipe-core = { path = "../core" }
+tracing = "*"
+tracing-appender = "*"
+tracing-subscriber = "*"
+
+[dependencies.windows]
+version = "*"
+git = "https://github.com/microsoft/windows-rs"
+features = [
+    "Win32_Foundation",
+    "Win32_System_SystemServices",
+    "Win32_System_LibraryLoader",
+]
