@@ -1,30 +1,30 @@
 use windows::{
-    core::implement,
+    core::{implement, Result},
     Win32::System::RemoteDesktop::{IWTSPlugin, IWTSPlugin_Impl, IWTSVirtualChannelManager},
 };
 
 #[implement(IWTSPlugin)]
-struct DvcPlugin();
+pub struct DvcPlugin;
 
 impl IWTSPlugin_Impl for DvcPlugin {
     fn Initialize(
         &self,
-        pchannelmgr: &core::option::Option<
+        pchannelmgr: &Option<
             IWTSVirtualChannelManager,
         >,
-    ) -> windows::core::Result<()> {
-        todo!()
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn Connected(&self) -> windows::core::Result<()> {
-        todo!()
+    fn Connected(&self) -> Result<()> {
+        Ok(())
     }
 
-    fn Disconnected(&self, dwdisconnectcode: u32) -> windows::core::Result<()> {
-        todo!()
+    fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
+        Ok(())
     }
 
-    fn Terminated(&self) -> windows::core::Result<()> {
-        todo!()
+    fn Terminated(&self) -> Result<()> {
+        Ok(())
     }
 }
