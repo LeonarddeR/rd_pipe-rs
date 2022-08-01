@@ -9,7 +9,7 @@ pub struct DvcPlugin;
 impl IWTSPlugin_Impl for DvcPlugin {
     fn Initialize(
         &self,
-        pchannelmgr: &Option<
+        _pchannelmgr: &Option<
             IWTSVirtualChannelManager,
         >,
     ) -> Result<()> {
@@ -20,7 +20,7 @@ impl IWTSPlugin_Impl for DvcPlugin {
         Ok(())
     }
 
-    fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
+    fn Disconnected(&self, _dwdisconnectcode: u32) -> Result<()> {
         Ok(())
     }
 

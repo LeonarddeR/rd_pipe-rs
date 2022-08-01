@@ -1,12 +1,11 @@
-use std::mem::transmute;
+
 use windows::core::{Error, Interface};
 use windows::{
     core::{implement, IUnknown, Result, GUID},
     Win32::{
-        Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+        Foundation::{BOOL, CLASS_E_NOAGGREGATION},
         System::{
             Com::{IClassFactory, IClassFactory_Impl},
-            RemoteDesktop::IWTSPlugin,
         },
     },
 };

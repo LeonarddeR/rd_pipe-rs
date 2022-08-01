@@ -4,7 +4,6 @@ use std::time::Duration;
 use std::thread::sleep;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, IClassFactory};
 use windows::{
-    core::IUnknown,
     Win32::System::Com::{
         CoInitializeEx, CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER,
         REGCLS_MULTIPLEUSE,
