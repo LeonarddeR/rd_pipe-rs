@@ -1,17 +1,15 @@
-use dvc::class_factory::{ClassFactory, IID_I_DVC_PLUGIN};
-
 use std::time::Duration;
 use std::thread::sleep;
+use dvc_core::class_factory::{ClassFactory, IID_I_DVC_PLUGIN};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, IClassFactory};
-use windows::{
-    Win32::System::Com::{
+use windows::Win32::System::Com::{
         CoInitializeEx, CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER,
         REGCLS_MULTIPLEUSE,
-    },
-};
+    };
 
 fn main() {
     unsafe { CoInitializeEx(core::ptr::null_mut(), COINIT_MULTITHREADED) }.unwrap();
+
     let factory: IClassFactory = ClassFactory.into();
     let res = unsafe {
         CoRegisterClassObject(
