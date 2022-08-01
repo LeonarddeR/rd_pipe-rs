@@ -3,6 +3,9 @@ name = "dvc"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+winit = "0.27.1"
+
 [dependencies.windows]
 version = "0.39.0"
 features = [
