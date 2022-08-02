@@ -1,13 +1,15 @@
+use std::mem::transmute;
 
-use windows::core::{Error, Interface};
 use windows::{
     core::{implement, IUnknown, Result, GUID},
     Win32::{
-        Foundation::{BOOL, CLASS_E_NOAGGREGATION},
-        System::{
-            Com::{IClassFactory, IClassFactory_Impl},
-        },
+        Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+        System::Com::{IClassFactory, IClassFactory_Impl},
     },
+};
+use windows::{
+    core::{Error, Interface},
+    Win32::System::RemoteDesktop::IWTSPlugin,
 };
 
 use crate::dvc_plugin::DvcPlugin;
@@ -24,14 +26,26 @@ impl IClassFactory_Impl for ClassFactory {
         iid: *const GUID,
         object: *mut *mut core::ffi::c_void,
     ) -> Result<()> {
-        let iid = &unsafe { *iid };
+        let iid = unsafe { *iid };
         unsafe { *object = std::ptr::null_mut() };
         if outer.is_some() {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
-
-        let plugin: IUnknown = DvcPlugin.into();
-        unsafe { plugin.query(iid, object as *mut _).ok() }
+        let plugin = DvcPlugin;
+        if iid == IUnknown::IID {
+            let plugin: IUnknown = plugin.into();
+            unsafe {
+                *object = transmute(plugin);
+            }
+        } else if iid == IWTSPlugin::IID {
+            let plugin: IWTSPlugin = plugin.into();
+            unsafe {
+                *object = transmute(plugin);
+            }
+        } else {
+            return Err(Error::from(E_NOINTERFACE));
+        }
+        Ok(())
     }
 
     fn LockServer(&self, lock: BOOL) -> Result<()> {
