@@ -1,16 +1,14 @@
 #![windows_subsystem = "windows"]
 use rd_pipe_core::class_factory::{ClassFactory, IID_I_RD_PIPE_PLUGIN};
+use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Com::{
-    CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER,
-    REGCLS_MULTIPLEUSE,
+    CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE,
 };
-use windows::Win32::System::Com::{IClassFactory};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
-
 
 fn main() {
     //unsafe { CoInitializeEx(core::ptr::null_mut(), COINIT_MULTITHREADED) }.unwrap();
