@@ -1,2 +1,2 @@
 pub mod class_factory;
-pub mod dvc_plugin;
+pub mod rd_pipe_plugin;

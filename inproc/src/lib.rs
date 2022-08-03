@@ -1,7 +1,13 @@
 use std::{ffi::c_void, mem::transmute};
 
-use dvc_core::class_factory::ClassFactory;
-use windows::{core::{GUID, HRESULT, Interface}, Win32::{System::Com::IClassFactory, Foundation::{E_UNEXPECTED, S_OK}}};
+use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
+use windows::{
+    core::{Interface, GUID, HRESULT},
+    Win32::{
+        Foundation::{E_UNEXPECTED, S_OK},
+        System::{Com::IClassFactory, RemoteDesktop::IWTSPlugin},
+    },
+};
 
 #[no_mangle]
 pub extern "stdcall" fn DllGetClassObject(
@@ -23,5 +29,24 @@ pub extern "stdcall" fn DllGetClassObject(
     let factory: IClassFactory = factory.into();
     *ppv = unsafe { transmute(factory) };
 
+    S_OK
+}
+
+#[no_mangle]
+pub extern "stdcall" fn VirtualChannelGetInstance(
+    riid: *const GUID,
+    pnumobjs: *mut u32,
+    ppo: *mut *mut c_void,
+) -> HRESULT {
+    let riid = unsafe { *riid };
+    if riid != IWTSPlugin::IID {
+        return E_UNEXPECTED;
+    }
+
+    let pnumobjs = unsafe { &mut *pnumobjs };
+    let ppo = unsafe { &mut *ppo };
+    *pnumobjs = 1;
+    let plugin: IWTSPlugin = RdPipePlugin.into();
+    *ppo = unsafe { transmute(plugin) };
     S_OK
 }

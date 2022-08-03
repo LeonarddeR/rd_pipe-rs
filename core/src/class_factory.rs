@@ -12,9 +12,9 @@ use windows::{
     Win32::System::RemoteDesktop::IWTSPlugin,
 };
 
-use crate::dvc_plugin::DvcPlugin;
+use crate::rd_pipe_plugin::RdPipePlugin;
 
-pub const IID_I_DVC_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
+pub const IID_I_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 
 #[implement(IClassFactory)]
 pub struct ClassFactory;
@@ -27,21 +27,18 @@ impl IClassFactory_Impl for ClassFactory {
         object: *mut *mut core::ffi::c_void,
     ) -> Result<()> {
         let iid = unsafe { *iid };
-        unsafe { *object = std::ptr::null_mut() };
+        let object = unsafe { &mut *object };
+        *object = std::ptr::null_mut();
         if outer.is_some() {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
-        let plugin = DvcPlugin;
+        let plugin = RdPipePlugin::new();
         if iid == IUnknown::IID {
             let plugin: IUnknown = plugin.into();
-            unsafe {
-                *object = transmute(plugin);
-            }
+            *object = unsafe { transmute(plugin) };
         } else if iid == IWTSPlugin::IID {
             let plugin: IWTSPlugin = plugin.into();
-            unsafe {
-                *object = transmute(plugin);
-            }
+            *object = unsafe { transmute(plugin) };
         } else {
             return Err(Error::from(E_NOINTERFACE));
         }

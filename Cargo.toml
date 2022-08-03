@@ -5,7 +5,6 @@ members = [
     "outproc",
 ]
 default-members = [
-    "core",
     "inproc",
     "outproc",
 ]

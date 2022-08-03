@@ -1,7 +1,5 @@
 #![windows_subsystem = "windows"]
-use dvc_core::class_factory::{ClassFactory, IID_I_DVC_PLUGIN};
-
-
+use rd_pipe_core::class_factory::{ClassFactory, IID_I_RD_PIPE_PLUGIN};
 use windows::Win32::System::Com::{
     CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER,
     REGCLS_MULTIPLEUSE,
@@ -24,7 +22,7 @@ fn main() {
     let factory: IClassFactory = ClassFactory.into();
     let res = unsafe {
         CoRegisterClassObject(
-            &IID_I_DVC_PLUGIN,
+            &IID_I_RD_PIPE_PLUGIN,
             &factory,
             CLSCTX_LOCAL_SERVER,
             REGCLS_MULTIPLEUSE,

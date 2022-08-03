@@ -1,5 +1,5 @@
 [package]
-name = "dvc_core"
+name = "rd_pipe-core"
 version = "0.1.0"
 edition = "2021"
 
