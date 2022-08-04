@@ -8,9 +8,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rd_pipe-core = { path = "../core" }
+tracing = "0.1"
+tracing-appender = "0.2"
 
 [dependencies.windows]
-version = "0.39.0"
+version = "0.39"
 features = [
     "Win32_Foundation",
 ]

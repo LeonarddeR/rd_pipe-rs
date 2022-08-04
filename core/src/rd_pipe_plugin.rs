@@ -1,3 +1,4 @@
+use tracing::instrument;
 use windows::{
     core::{implement, Error, Result},
     Win32::{
@@ -15,17 +16,18 @@ use windows::{
 pub struct RdPipePlugin(Option<IWTSVirtualChannelManager>);
 
 impl RdPipePlugin {
-    pub fn new() {
-        RdPipePlugin(None);
+    pub fn new() -> RdPipePlugin {
+        RdPipePlugin(None)
     }
 }
 
 impl IWTSPlugin_Impl for RdPipePlugin {
+    #[instrument]
     fn Initialize(&self, pchannelmgr: &Option<IWTSVirtualChannelManager>) -> Result<()> {
         if pchannelmgr.is_none() {
             return Err(Error::from(E_UNEXPECTED));
         }
-        self.0 = unsafe { *pchannelmgr };
+        self.0 = *pchannelmgr;
         Ok(())
     }
 
@@ -42,10 +44,12 @@ impl IWTSPlugin_Impl for RdPipePlugin {
     }
 }
 
+#[derive(Debug)]
 #[implement(IWTSListenerCallback)]
 pub struct RdPipeListenerCallback;
 
 impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
+    #[instrument]
     fn OnNewChannelConnection(
         &self,
         pchannel: &Option<IWTSVirtualChannel>,
@@ -60,14 +64,17 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
     }
 }
 
+#[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback;
 
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
+    #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         Ok(())
     }
 
+    #[instrument]
     fn OnClose(&self) -> Result<()> {
         Ok(())
     }

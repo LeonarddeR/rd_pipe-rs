@@ -3,8 +3,14 @@ name = "rd_pipe-core"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies.tracing]
+version = "0.1"
+features = [
+    "log",
+]
+
 [dependencies.windows]
-version = "0.39.0"
+version = "0.39"
 features = [
     "implement",
     "Win32_Foundation",

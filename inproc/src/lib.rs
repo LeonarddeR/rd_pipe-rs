@@ -1,6 +1,7 @@
 use std::{ffi::c_void, mem::transmute};
 
 use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
+use tracing::instrument;
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
@@ -10,6 +11,7 @@ use windows::{
 };
 
 #[no_mangle]
+#[instrument]
 pub extern "stdcall" fn DllGetClassObject(
     _rclsid: *const GUID,
     riid: *const GUID,
@@ -33,6 +35,7 @@ pub extern "stdcall" fn DllGetClassObject(
 }
 
 #[no_mangle]
+#[instrument]
 pub extern "stdcall" fn VirtualChannelGetInstance(
     riid: *const GUID,
     pnumobjs: *mut u32,

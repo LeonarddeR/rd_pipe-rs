@@ -1,5 +1,6 @@
 use std::mem::transmute;
 
+use tracing::instrument;
 use windows::{
     core::{implement, IUnknown, Result, GUID},
     Win32::{
@@ -17,9 +18,11 @@ use crate::rd_pipe_plugin::RdPipePlugin;
 pub const IID_I_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 
 #[implement(IClassFactory)]
+#[derive(Debug)]
 pub struct ClassFactory;
 
 impl IClassFactory_Impl for ClassFactory {
+    #[instrument]
     fn CreateInstance(
         &self,
         outer: &Option<IUnknown>,
@@ -45,6 +48,7 @@ impl IClassFactory_Impl for ClassFactory {
         Ok(())
     }
 
+    #[instrument]
     fn LockServer(&self, lock: BOOL) -> Result<()> {
         assert!(lock.as_bool());
         Ok(())

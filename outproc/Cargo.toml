@@ -6,11 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-winit = "0.27.1"
+tracing = "0.1"
+tracing-appender = "0.2"
+winit = "0.27"
 rd_pipe-core = { path = "../core" }
 
 [dependencies.windows]
-version = "0.39.0"
+version = "0.39"
 features = [
     "Win32_System_Com",
 ]
