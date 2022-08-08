@@ -1,0 +1,83 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'rd_pipe-core'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=rd_pipe-core"
+				],
+				"filter": {
+					"name": "rd_pipe-core",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'rd_pipe-inproc'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=rd_pipe-inproc"
+				],
+				"filter": {
+					"name": "rd_pipe-inproc",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'rd_pipe-outproc'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=rd_pipe-outproc",
+					"--package=rd_pipe-outproc"
+				],
+				"filter": {
+					"name": "rd_pipe-outproc",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'rd_pipe-outproc'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=rd_pipe-outproc",
+					"--package=rd_pipe-outproc"
+				],
+				"filter": {
+					"name": "rd_pipe-outproc",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		}
+	]
+}

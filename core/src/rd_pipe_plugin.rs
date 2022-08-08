@@ -1,3 +1,5 @@
+use std::sync::RwLock;
+
 use tracing::instrument;
 use windows::{
     core::{implement, Error, Result},
@@ -13,11 +15,11 @@ use windows::{
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
-pub struct RdPipePlugin(Option<IWTSVirtualChannelManager>);
+pub struct RdPipePlugin(RwLock<Option<IWTSVirtualChannelManager>>);
 
 impl RdPipePlugin {
     pub fn new() -> RdPipePlugin {
-        RdPipePlugin(None)
+        RdPipePlugin(RwLock::new(None))
     }
 }
 
@@ -27,7 +29,8 @@ impl IWTSPlugin_Impl for RdPipePlugin {
         if pchannelmgr.is_none() {
             return Err(Error::from(E_UNEXPECTED));
         }
-        self.0 = *pchannelmgr;
+        let mut writer = self.0.write().unwrap();
+        *writer = pchannelmgr.clone();
         Ok(())
     }
 
@@ -60,13 +63,25 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
         if pchannel.is_none() {
             return Err(Error::from(E_UNEXPECTED));
         }
+        let channel = pchannel.to_owned().unwrap();
+        let pbaccept = unsafe { &mut *pbaccept };
+        let ppcallback = unsafe { &mut *ppcallback };
+        *pbaccept = BOOL::from(true);
+        let callback: IWTSVirtualChannelCallback =RdPipeChannelCallback::new(channel).into();
+        * ppcallback = Some(callback);
         Ok(())
     }
 }
 
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
-pub struct RdPipeChannelCallback;
+pub struct RdPipeChannelCallback(IWTSVirtualChannel);
+
+impl RdPipeChannelCallback {
+    pub fn new(channel: IWTSVirtualChannel) -> RdPipeChannelCallback {
+        RdPipeChannelCallback(channel)
+    }
+}
 
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
