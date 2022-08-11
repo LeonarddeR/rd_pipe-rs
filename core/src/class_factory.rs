@@ -1,6 +1,6 @@
 use std::mem::transmute;
 
-use tracing::instrument;
+use tracing::{debug, instrument};
 use windows::{
     core::{implement, IUnknown, Result, GUID},
     Win32::{
@@ -32,18 +32,24 @@ impl IClassFactory_Impl for ClassFactory {
         let iid = unsafe { *iid };
         let object = unsafe { &mut *object };
         *object = std::ptr::null_mut();
+        debug!("Object with type {:?} requested", iid);
         if outer.is_some() {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
+        debug!("Creating plugin instance");
         let plugin = RdPipePlugin::new();
-        if iid == IUnknown::IID {
-            let plugin: IUnknown = plugin.into();
-            *object = unsafe { transmute(plugin) };
-        } else if iid == IWTSPlugin::IID {
-            let plugin: IWTSPlugin = plugin.into();
-            *object = unsafe { transmute(plugin) };
-        } else {
-            return Err(Error::from(E_NOINTERFACE));
+        match iid {
+            IUnknown::IID => {
+                debug!("Requested IUnknown");
+                let plugin: IUnknown = plugin.into();
+                *object = unsafe { transmute(plugin) };
+            }
+            IWTSPlugin::IID => {
+                debug!("Requested IWTSPlugin");
+                let plugin: IWTSPlugin = plugin.into();
+                *object = unsafe { transmute(plugin) };
+            }
+            _ => return Err(Error::from(E_NOINTERFACE)),
         }
         Ok(())
     }

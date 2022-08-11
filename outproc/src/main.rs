@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
+use std::env::temp_dir;
+
 use rd_pipe_core::class_factory::{ClassFactory, IID_I_RD_PIPE_PLUGIN};
-use tracing::{debug, info, instrument};
+use tracing::{instrument};
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Com::{
     CoRegisterClassObject, CoRevokeClassObject, CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE,
@@ -13,14 +15,13 @@ use winit::{
 
 #[instrument]
 fn main() {
-    let file_appender = tracing_appender::rolling::never("d:\\", "RdPipe.log");
+    let file_appender = tracing_appender::rolling::never(temp_dir(), "RdPipe.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
         .init();
-    debug!("Some test");
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_visible(false)

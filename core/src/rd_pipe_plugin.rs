@@ -1,14 +1,14 @@
 use std::sync::RwLock;
 
-use tracing::instrument;
+use tracing::{debug, error, info, instrument};
 use windows::{
     core::{implement, Error, Result},
     Win32::{
         Foundation::{BOOL, BSTR, E_UNEXPECTED},
         System::RemoteDesktop::{
-            IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin, IWTSPlugin_Impl,
-            IWTSVirtualChannel, IWTSVirtualChannelCallback, IWTSVirtualChannelCallback_Impl,
-            IWTSVirtualChannelManager,
+            IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
+            IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
+            IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
         },
     },
 };
@@ -21,28 +21,48 @@ impl RdPipePlugin {
     pub fn new() -> RdPipePlugin {
         RdPipePlugin(RwLock::new(None))
     }
+
+    #[instrument]
+    fn create_listener(
+        &self,
+        channel_mgr: &IWTSVirtualChannelManager,
+        channel_name: String,
+    ) -> Result<IWTSListener> {
+        debug!("Creating listener with name {}", channel_name);
+        let callback: IWTSListenerCallback = RdPipeListenerCallback.into();
+        unsafe { channel_mgr.CreateListener((channel_name + "\0").as_ptr(), 0, &callback) }
+    }
 }
 
 impl IWTSPlugin_Impl for RdPipePlugin {
     #[instrument]
     fn Initialize(&self, pchannelmgr: &Option<IWTSVirtualChannelManager>) -> Result<()> {
-        if pchannelmgr.is_none() {
-            return Err(Error::from(E_UNEXPECTED));
-        }
-        let mut writer = self.0.write().unwrap();
-        *writer = pchannelmgr.clone();
+        let channel_mgr = match pchannelmgr {
+            Some(m) => m,
+            None => {
+                error!("No pchannelmgr given when initializing");
+                return Err(Error::from(E_UNEXPECTED));
+            }
+        };
+        self.create_listener(channel_mgr, "echo".to_string())?;
         Ok(())
     }
 
+    #[instrument]
     fn Connected(&self) -> Result<()> {
+        info!("Client connected");
         Ok(())
     }
 
-    fn Disconnected(&self, _dwdisconnectcode: u32) -> Result<()> {
+    #[instrument]
+    fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
+        info!("Client connected with {}", dwdisconnectcode);
         Ok(())
     }
 
+    #[instrument]
     fn Terminated(&self) -> Result<()> {
+        info!("Client terminated");
         Ok(())
     }
 }
@@ -60,15 +80,18 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
         pbaccept: *mut BOOL,
         ppcallback: *mut Option<IWTSVirtualChannelCallback>,
     ) -> Result<()> {
-        if pchannel.is_none() {
-            return Err(Error::from(E_UNEXPECTED));
-        }
-        let channel = pchannel.to_owned().unwrap();
+        debug!("Creating new callback for channel {:?} with data {}", pchannel, data);
+        let channel = match pchannel {
+            Some(c) => c.to_owned(),
+            None => return Err(Error::from(E_UNEXPECTED)),
+        };
         let pbaccept = unsafe { &mut *pbaccept };
         let ppcallback = unsafe { &mut *ppcallback };
         *pbaccept = BOOL::from(true);
-        let callback: IWTSVirtualChannelCallback =RdPipeChannelCallback::new(channel).into();
-        * ppcallback = Some(callback);
+        debug!("Creating callback");
+        let callback: IWTSVirtualChannelCallback = RdPipeChannelCallback::new(channel).into();
+        debug!("Callback {:?} created", callback);
+        *ppcallback = Some(callback);
         Ok(())
     }
 }
@@ -91,6 +114,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        Ok(())
+        debug!("Closing channel {:?} with callback {:?}", self.0, self);
+        unsafe { self.0.Close()}
     }
 }
