@@ -3,6 +3,8 @@ name = "rd_pipe-core"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+bytes = "1"
 
 [dependencies.tracing]
 version = "0.1"
@@ -17,4 +19,14 @@ features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_RemoteDesktop",
+]
+
+[dependencies.tokio]
+version = "1"
+features = [
+    "full",
+    "io-util",
+    "rt",
+    "net"
+    ,"sync",
 ]
