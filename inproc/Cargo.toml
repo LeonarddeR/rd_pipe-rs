@@ -11,6 +11,7 @@ rd_pipe-core = { path = "../core" }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3"
+lazy_static = "1"
 
 [dependencies.windows]
 version = "0.39"
@@ -18,4 +19,11 @@ features = [
     "Win32_Foundation",
     "Win32_System_SystemServices",
     "Win32_System_LibraryLoader",
+]
+
+[dependencies.tokio]
+version = "1"
+features = [
+    "rt",
+    "rt-multi-thread",
 ]

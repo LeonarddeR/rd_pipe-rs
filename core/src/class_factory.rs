@@ -1,5 +1,4 @@
 use std::mem::transmute;
-
 use tracing::{debug, instrument};
 use windows::{
     core::{implement, IUnknown, Result, GUID},

@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use core::slice;
-use std::{future, io::ErrorKind::WouldBlock, sync::Arc};
+use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions},
     sync::RwLock,
@@ -146,21 +146,21 @@ impl RdPipeChannelCallback {
     }
 
     fn run_pipe_reader(&self) {
-        let server = Arc::clone(&(self.pipe_server));
-        let channel = AgileReference::new(&(self.channel)).unwrap();
+        let server_arc = Arc::clone(&(self.pipe_server));
+        let channel_agile = AgileReference::new(&(self.channel)).unwrap();
         tokio::spawn(async move {
             {
-                let reader = server.read().await;
-                reader.connect().await;
+                let server = server_arc.read().await;
+                server.connect().await;
             }
             loop {
                 let mut buf = BytesMut::with_capacity(4096);
-                let reader = server.read().await;
-                match reader.try_read(&mut buf) {
+                let server = server_arc.read().await;
+                match server.try_read(&mut buf) {
                     Ok(n) => {
                         debug!("read {} bytes", n);
-                        let channel_inst = channel.resolve().unwrap();
-                        unsafe { channel_inst.Write(&mut buf, None) };
+                        let channel = channel_agile.resolve().unwrap();
+                        unsafe { channel.Write(&mut buf, None) };
                     }
                     Err(e) if e.kind() == WouldBlock => {
                         continue;
@@ -184,16 +184,14 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-        tokio::future::block_on(self.pipe_server.read())
-            .unwrap()
-            .try_write(slice);
+        self.pipe_server.blocking_read().try_write(slice);
         Ok(())
     }
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
         debug!("Closing channel {}", self.channel.as_raw() as usize);
-        self.pipe_server.read().unwrap().disconnect().unwrap();
+        self.pipe_server.blocking_read().disconnect().unwrap();
         unsafe { self.channel.Close() }
     }
 }

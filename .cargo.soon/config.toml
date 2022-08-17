@@ -1,0 +1,2 @@
+[build]
+target = ["stable-i686-pc-windows-msvc", "stable-x86_64-pc-windows-msvc"]

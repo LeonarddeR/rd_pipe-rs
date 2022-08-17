@@ -24,8 +24,6 @@ features = [
 [dependencies.tokio]
 version = "1"
 features = [
-    "full",
-    "io-util",
     "rt",
     "net"
     ,"sync",
