@@ -55,9 +55,10 @@ pub extern "stdcall" fn DllGetClassObject(
         debug!("DllGetClassObject called for unknown interface: {:?}", riid);
         return E_UNEXPECTED;
     }
-
+    debug!("Constructing class factory");
     let factory = ClassFactory;
     let factory: IClassFactory = factory.into();
+    debug!("Setting result pointer to class factory");
     *ppv = unsafe { transmute(factory) };
 
     S_OK
@@ -70,15 +71,20 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
     pnumobjs: *mut u32,
     ppo: *mut *mut c_void,
 ) -> HRESULT {
+    debug!("VirtualChannelGetInstance called");
     let riid = unsafe { *riid };
     if riid != IWTSPlugin::IID {
+        debug!("VirtualChannelGetInstance called for unknown interface: {:?}", riid);
         return E_UNEXPECTED;
     }
 
     let pnumobjs = unsafe { &mut *pnumobjs };
     let ppo = unsafe { &mut *ppo };
+    debug!("Setting pnumobjs to 1, since we only support one plugin");
     *pnumobjs = 1;
+    debug!("Constructing the plugin");
     let plugin: IWTSPlugin = RdPipePlugin::new().into();
+    debug!("Setting result pointer to plugin");
     *ppo = unsafe { transmute(plugin) };
     S_OK
 }
