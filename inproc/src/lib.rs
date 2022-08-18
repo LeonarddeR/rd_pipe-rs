@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
 use std::{ffi::c_void, mem::transmute};
 use tokio::runtime::Runtime;
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 use windows::Win32::{
     Foundation::BOOL,
     System::{LibraryLoader::DisableThreadLibraryCalls, SystemServices::DLL_PROCESS_ATTACH},
@@ -25,9 +25,8 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
     if reason == DLL_PROCESS_ATTACH {
         // Set up logging
         let file_appender = tracing_appender::rolling::never("d:", "RdPipe.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt()
-            .with_writer(non_blocking)
+            .with_writer(file_appender)
             .with_ansi(false)
             .with_max_level(tracing::Level::DEBUG)
             .init();
@@ -74,17 +73,28 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
     debug!("VirtualChannelGetInstance called");
     let riid = unsafe { *riid };
     if riid != IWTSPlugin::IID {
-        debug!("VirtualChannelGetInstance called for unknown interface: {:?}", riid);
+        debug!(
+            "VirtualChannelGetInstance called for unknown interface: {:?}",
+            riid
+        );
         return E_UNEXPECTED;
     }
-
     let pnumobjs = unsafe { &mut *pnumobjs };
-    let ppo = unsafe { &mut *ppo };
-    debug!("Setting pnumobjs to 1, since we only support one plugin");
-    *pnumobjs = 1;
-    debug!("Constructing the plugin");
-    let plugin: IWTSPlugin = RdPipePlugin::new().into();
-    debug!("Setting result pointer to plugin");
-    *ppo = unsafe { transmute(plugin) };
+    debug!("Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)");
+    if ppo.is_null() {
+        debug!("Result pointer is null, client is querying for number of objects. Setting pnumobjs to 1, since we only support one plugin");
+        *pnumobjs = 1;
+    } else {
+        debug!("{} plugins requested", *pnumobjs);
+        if *pnumobjs != 1 {
+            error!("Invalid number of plugins requested: {}", *pnumobjs);
+            return E_UNEXPECTED;
+        }
+        let ppo = unsafe { &mut *ppo };
+        debug!("Constructing the plugin");
+        let plugin: IWTSPlugin = RdPipePlugin::new().into();
+        debug!("Setting result pointer to plugin");
+        *ppo = unsafe { transmute(plugin) };
+    }
     S_OK
 }
