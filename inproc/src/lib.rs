@@ -1,11 +1,13 @@
-use lazy_static::lazy_static;
 use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
-use std::{ffi::c_void, mem::transmute};
-use tokio::runtime::Runtime;
-use tracing::{debug, error, instrument};
+use std::{ffi::c_void, mem::transmute, panic};
+
+use tracing::{debug, error, instrument, trace};
 use windows::Win32::{
     Foundation::BOOL,
-    System::{LibraryLoader::DisableThreadLibraryCalls, SystemServices::DLL_PROCESS_ATTACH},
+    System::{
+        LibraryLoader::DisableThreadLibraryCalls,
+        SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
+    },
 };
 use windows::{
     core::{Interface, GUID, HRESULT},
@@ -15,24 +17,30 @@ use windows::{
     },
 };
 
-lazy_static! {
-    static ref RUNTIME: Runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-}
-
 #[no_mangle]
 #[instrument]
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
-    if reason == DLL_PROCESS_ATTACH {
-        // Set up logging
-        let file_appender = tracing_appender::rolling::never("d:", "RdPipe.log");
-        tracing_subscriber::fmt()
-            .with_writer(file_appender)
-            .with_ansi(false)
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
-        debug!("DllMain: DLL_PROCESS_ATTACH");
-        unsafe { DisableThreadLibraryCalls(hinst) };
-        debug!("Disabled thread library calls");
+    match reason {
+        DLL_PROCESS_ATTACH => {
+            panic::set_hook(Box::new(|info| {
+                error!("{:?}", info);
+            }));
+            // Set up logging
+            let file_appender = tracing_appender::rolling::never("d:", "RdPipe.log");
+            tracing_subscriber::fmt()
+                .compact()
+                .with_writer(file_appender)
+                .with_ansi(false)
+                .with_max_level(tracing::Level::TRACE)
+                .init();
+            trace!("DllMain: DLL_PROCESS_ATTACH");
+            unsafe { DisableThreadLibraryCalls(hinst) };
+            trace!("Disabled thread library calls");
+        }
+        DLL_PROCESS_DETACH => {
+            debug!("DllMain: DLL_PROCESS_DETACH");
+        }
+        _ => {}
     }
     BOOL::from(true)
 }

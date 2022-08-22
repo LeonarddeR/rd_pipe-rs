@@ -1,5 +1,5 @@
 use std::mem::transmute;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
 use windows::{
     core::{implement, IUnknown, Result, GUID},
     Win32::{
@@ -31,7 +31,7 @@ impl IClassFactory_Impl for ClassFactory {
         let iid = unsafe { *iid };
         let object = unsafe { &mut *object };
         *object = std::ptr::null_mut();
-        debug!("Object with type {:?} requested", iid);
+        trace!("Object with type {:?} requested", iid);
         if outer.is_some() {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
@@ -39,12 +39,12 @@ impl IClassFactory_Impl for ClassFactory {
         let plugin = RdPipePlugin::new();
         match iid {
             IUnknown::IID => {
-                debug!("Requested IUnknown");
+                trace!("Requested IUnknown");
                 let plugin: IUnknown = plugin.into();
                 *object = unsafe { transmute(plugin) };
             }
             IWTSPlugin::IID => {
-                debug!("Requested IWTSPlugin");
+                trace!("Requested IWTSPlugin");
                 let plugin: IWTSPlugin = plugin.into();
                 *object = unsafe { transmute(plugin) };
             }
