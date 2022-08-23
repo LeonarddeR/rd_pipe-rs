@@ -129,7 +129,6 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-    channel: AgileReference<IWTSVirtualChannel>,
     server_task_handle: JoinHandle<()>,
     data_sender: UnboundedSender<()>,
 }
@@ -145,11 +144,9 @@ impl RdPipeChannelCallback {
             channel_name,
             channel.as_raw() as usize
         );
-        trace!("Creating an agile reference to the virtual channel");
-        let channel_agile = AgileReference::new(&channel).unwrap();
+        let handle = tokio::spawn(async move {});
         debug!("Constructing the callback");
         let callback = RdPipeChannelCallback {
-            channel: channel_agile,
             server_task_handle: handle,
             data_sender: sender,
         };
