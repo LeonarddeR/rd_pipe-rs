@@ -1,5 +1,5 @@
-use bytes::BytesMut;
-use core::slice;
+use bytes::{Bytes, BytesMut};
+use core::{fmt, slice};
 
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
@@ -22,8 +22,6 @@ use windows::{
         },
     },
 };
-
-use tokio::runtime::Builder;
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
@@ -130,61 +128,64 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     server_task_handle: JoinHandle<()>,
-    data_sender: UnboundedSender<()>,
+    data_sender: UnboundedSender<Bytes>,
 }
 
 impl RdPipeChannelCallback {
     #[instrument]
     pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> RdPipeChannelCallback {
         trace!("Constructing unbounded mpsc");
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = unbounded_channel::<Bytes>();
         let addr = format!(
             "{}_{}_{}",
             PIPE_NAME_PREFIX,
             channel_name,
             channel.as_raw() as usize
         );
-        let handle = tokio::spawn(async move {});
+        debug!("Creating agile reference to channel");
+        let channel_agile = AgileReference::new(&channel).unwrap();
+        let handle = tokio::spawn(async move {
+            RdPipeChannelCallback::process_messages(channel_agile, &addr, receiver).await
+        });
         debug!("Constructing the callback");
         let callback = RdPipeChannelCallback {
             server_task_handle: handle,
             data_sender: sender,
         };
-        callback.process_messages(&addr, receiver);
         callback
     }
 
-    #[instrument]
-    fn process_messages(&self, pipe_addr: &str, data_receiver: UnboundedReceiver<()>) {
-        trace!("Cloning pipe server");
-        let server_arc = Arc::clone(&(self.pipe_server));
-        runtime.block_on(async move {
-            {
-                let server = server_arc.read().await;
-                trace!("Initiate connection to pipe client");
-                server.connect().await;
-            }
-            trace!("Entering pipe writing loop");
-            loop {
-                let mut buf = BytesMut::with_capacity(4096);
-                let server = server_arc.read().await;
-                match server.try_read(&mut buf) {
-                    Ok(n) => {
-                        trace!("read {} bytes", n);
-                        let channel = channel_agile.resolve().unwrap();
-                        trace!("Writing buffer to channel");
-                        unsafe { channel.Write(&mut buf, None) };
-                    }
-                    Err(e) if e.kind() == WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        error!("Error reading from pipe server: {}", e);
-                        return e;
-                    }
+    async fn process_messages(
+        channel_agile: AgileReference<IWTSVirtualChannel>,
+        pipe_addr: &str,
+        data_receiver: UnboundedReceiver<Bytes>,
+    ) {
+        let channel = channel_agile.resolve().unwrap();
+        trace!("Creating pipe server");
+        let server = ServerOptions::new()
+            .max_instances(1)
+            .create(pipe_addr)
+            .unwrap();
+        trace!("Initiate connection to pipe client");
+        server.connect().await;
+        trace!("Entering pipe writing loop");
+        loop {
+            let mut buf = BytesMut::with_capacity(4096);
+            match server.try_read(&mut buf) {
+                Ok(n) => {
+                    trace!("read {} bytes", n);
+                    trace!("Writing buffer to channel");
+                    unsafe { channel.Write(&mut buf, None) };
+                }
+                Err(e) if e.kind() == WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    error!("Error reading from pipe server: {}", e);
+                    return e;
                 }
             }
-        });
+        }
     }
 }
 
@@ -199,15 +200,15 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
+        let bytes = bytes::Bytes::copy_from_slice(slice);
         trace!("Writing received data to pipe");
-        self.pipe_server.blocking_read().try_write(slice);
+        self.data_sender.send(bytes);
         Ok(())
     }
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        info!("Closing channel {}", self.channel.as_raw() as usize);
-        self.pipe_server.blocking_read().disconnect().unwrap();
-        unsafe { self.channel.Close() }
+        drop(self.data_sender);
+        Ok(())
     }
 }
