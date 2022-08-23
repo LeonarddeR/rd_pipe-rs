@@ -25,6 +25,7 @@ features = [
 version = "1"
 features = [
     "rt",
-    "net"
-    ,"sync",
+    "net",
+    "io-util",
+    "sync",
 ]

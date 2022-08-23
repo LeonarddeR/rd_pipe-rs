@@ -4,11 +4,11 @@ use core::slice;
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    runtime::{Handle, Runtime},
     sync::{
-        mpsc::{self, UnboundedSender},
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
         RwLock,
     },
+    task::JoinHandle,
 };
 use tracing::{debug, error, info, instrument, trace};
 use windows::{
@@ -27,27 +27,12 @@ use tokio::runtime::Builder;
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
-pub struct RdPipePlugin {
-    async_runtime: Arc<Runtime>,
-    shutdown_sender: UnboundedSender<()>,
-}
+pub struct RdPipePlugin;
 
 impl RdPipePlugin {
     #[instrument]
     pub fn new() -> RdPipePlugin {
-        debug!("Constructing async runtime");
-        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-        debug!("Constructing shutdown channel");
-        let (shutdown_send, mut shutdown_recv) = mpsc::unbounded_channel();
-        debug!("Run task on runtime");
-        runtime.spawn(async move {
-            shutdown_recv.recv().await;
-        });
-        debug!("Constructing plugin");
-        RdPipePlugin {
-            async_runtime: Arc::new(runtime),
-            shutdown_sender: shutdown_send,
-        }
+        RdPipePlugin
     }
 
     #[instrument]
@@ -57,8 +42,7 @@ impl RdPipePlugin {
         channel_name: &str,
     ) -> Result<IWTSListener> {
         debug!("Creating listener with name {}", channel_name);
-        let callback: IWTSListenerCallback =
-            RdPipeListenerCallback::new(channel_name, self.async_runtime.handle()).into();
+        let callback: IWTSListenerCallback = RdPipeListenerCallback::new(channel_name).into();
         unsafe { channel_mgr.CreateListener(format!("{}\0", channel_name).as_ptr(), 0, &callback) }
     }
 }
@@ -92,7 +76,6 @@ impl IWTSPlugin_Impl for RdPipePlugin {
     #[instrument]
     fn Terminated(&self) -> Result<()> {
         info!("Client terminated");
-        self.shutdown_sender.send(()).ok();
         Ok(())
     }
 }
@@ -101,15 +84,13 @@ impl IWTSPlugin_Impl for RdPipePlugin {
 #[implement(IWTSListenerCallback)]
 pub struct RdPipeListenerCallback {
     name: String,
-    async_handle: Handle,
 }
 
 impl RdPipeListenerCallback {
     #[instrument]
-    pub fn new(name: &str, async_handle: &Handle) -> RdPipeListenerCallback {
+    pub fn new(name: &str) -> RdPipeListenerCallback {
         RdPipeListenerCallback {
             name: name.to_string(),
-            async_handle: async_handle.clone(),
         }
     }
 }
@@ -136,7 +117,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
-            RdPipeChannelCallback::new(channel, &self.name, &self.async_handle).into();
+            RdPipeChannelCallback::new(channel, &self.name).into();
         trace!("Callback {:?} created", callback);
         *ppcallback = Some(callback);
         Ok(())
@@ -148,42 +129,39 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-    channel: IWTSVirtualChannel,
-    pipe_server: Arc<RwLock<NamedPipeServer>>,
+    channel: AgileReference<IWTSVirtualChannel>,
+    server_task_handle: JoinHandle<()>,
+    data_sender: UnboundedSender<()>,
 }
 
 impl RdPipeChannelCallback {
     #[instrument]
-    pub fn new(
-        channel: IWTSVirtualChannel,
-        channel_name: &str,
-        async_handle: &Handle,
-    ) -> RdPipeChannelCallback {
+    pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> RdPipeChannelCallback {
+        trace!("Constructing unbounded mpsc");
+        let (sender, receiver) = unbounded_channel();
         let addr = format!(
             "{}_{}_{}",
             PIPE_NAME_PREFIX,
             channel_name,
             channel.as_raw() as usize
         );
-        debug!("Constructing pipe server with pipe address {}", addr);
-        let pipe_server = ServerOptions::new().max_instances(1).create(addr).unwrap();
+        trace!("Creating an agile reference to the virtual channel");
+        let channel_agile = AgileReference::new(&channel).unwrap();
         debug!("Constructing the callback");
         let callback = RdPipeChannelCallback {
-            channel,
-            pipe_server: Arc::new(RwLock::new(pipe_server)),
+            channel: channel_agile,
+            server_task_handle: handle,
+            data_sender: sender,
         };
-        callback.run_pipe_reader(&async_handle);
+        callback.process_messages(&addr, receiver);
         callback
     }
 
     #[instrument]
-    fn run_pipe_reader(&self, async_handle: &Handle) {
+    fn process_messages(&self, pipe_addr: &str, data_receiver: UnboundedReceiver<()>) {
         trace!("Cloning pipe server");
         let server_arc = Arc::clone(&(self.pipe_server));
-        trace!("Creating an agile reference to the virtual channel");
-        let channel_agile = AgileReference::new(&(self.channel)).unwrap();
-        trace!("Spawn task");
-        async_handle.spawn(async move {
+        runtime.block_on(async move {
             {
                 let server = server_arc.read().await;
                 trace!("Initiate connection to pipe client");
