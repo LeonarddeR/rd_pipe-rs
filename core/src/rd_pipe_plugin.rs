@@ -1,13 +1,11 @@
 use bytes::{Bytes, BytesMut};
-use core::{fmt, slice};
+use core::slice;
 
-use std::{io::ErrorKind::WouldBlock, sync::Arc};
+use std::io::ErrorKind::WouldBlock;
 use tokio::{
-    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    sync::{
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-        RwLock,
-    },
+    io::{split, AsyncReadExt, AsyncWriteExt},
+    net::windows::named_pipe::ServerOptions,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 use tracing::{debug, error, info, instrument, trace};
@@ -135,7 +133,7 @@ impl RdPipeChannelCallback {
     #[instrument]
     pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> RdPipeChannelCallback {
         trace!("Constructing unbounded mpsc");
-        let (sender, receiver) = unbounded_channel::<Bytes>();
+        let (sender, mut receiver) = unbounded_channel::<Bytes>();
         let addr = format!(
             "{}_{}_{}",
             PIPE_NAME_PREFIX,
@@ -145,7 +143,7 @@ impl RdPipeChannelCallback {
         debug!("Creating agile reference to channel");
         let channel_agile = AgileReference::new(&channel).unwrap();
         let handle = tokio::spawn(async move {
-            RdPipeChannelCallback::process_messages(channel_agile, &addr, receiver).await
+            RdPipeChannelCallback::process_messages(channel_agile, &addr, &mut receiver).await
         });
         debug!("Constructing the callback");
         let callback = RdPipeChannelCallback {
@@ -158,9 +156,8 @@ impl RdPipeChannelCallback {
     async fn process_messages(
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: &str,
-        data_receiver: UnboundedReceiver<Bytes>,
+        data_receiver: &mut UnboundedReceiver<Bytes>,
     ) {
-        let channel = channel_agile.resolve().unwrap();
         trace!("Creating pipe server");
         let server = ServerOptions::new()
             .max_instances(1)
@@ -168,23 +165,29 @@ impl RdPipeChannelCallback {
             .unwrap();
         trace!("Initiate connection to pipe client");
         server.connect().await;
-        trace!("Entering pipe writing loop");
-        loop {
-            let mut buf = BytesMut::with_capacity(4096);
-            match server.try_read(&mut buf) {
-                Ok(n) => {
-                    trace!("read {} bytes", n);
-                    trace!("Writing buffer to channel");
-                    unsafe { channel.Write(&mut buf, None) };
-                }
-                Err(e) if e.kind() == WouldBlock => {
-                    continue;
-                }
-                Err(e) => {
-                    error!("Error reading from pipe server: {}", e);
-                    return e;
+        let (mut server_reader, mut server_writer) = split(server);
+        let pipe_reader_handle = tokio::spawn(async move {
+            loop {
+                let mut buf = BytesMut::with_capacity(4096);
+                match server_reader.read(&mut buf).await {
+                    Ok(n) => {
+                        trace!("read {} bytes", n);
+                        let channel = channel_agile.resolve().unwrap();
+                        unsafe { channel.Write(&mut buf, None) };
+                    }
+                    Err(e) if e.kind() == WouldBlock => {
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Error reading from pipe server: {}", e);
+                        break;
+                    }
                 }
             }
+        });
+        loop {
+            let buf = data_receiver.recv().await.unwrap();
+            server_writer.write(&buf).await.unwrap();
         }
     }
 }
@@ -208,7 +211,6 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        drop(self.data_sender);
         Ok(())
     }
 }
