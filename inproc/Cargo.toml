@@ -8,6 +8,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 rd_pipe-core = { path = "../core" }
+lazy_static = "1"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3"

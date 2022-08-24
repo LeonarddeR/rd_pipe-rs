@@ -126,7 +126,7 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     server_task_handle: JoinHandle<()>,
-    data_sender: UnboundedSender<Bytes>,
+    data_sender: Option<UnboundedSender<Bytes>>,
 }
 
 impl RdPipeChannelCallback {
@@ -142,13 +142,14 @@ impl RdPipeChannelCallback {
         );
         debug!("Creating agile reference to channel");
         let channel_agile = AgileReference::new(&channel).unwrap();
+        debug!("Spawning process_messages task");
         let handle = tokio::spawn(async move {
             RdPipeChannelCallback::process_messages(channel_agile, &addr, &mut receiver).await
         });
         debug!("Constructing the callback");
         let callback = RdPipeChannelCallback {
             server_task_handle: handle,
-            data_sender: sender,
+            data_sender: Some(sender),
         };
         callback
     }
@@ -202,15 +203,21 @@ impl Drop for RdPipeChannelCallback {
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
-        let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-        let bytes = bytes::Bytes::copy_from_slice(slice);
-        trace!("Writing received data to pipe");
-        self.data_sender.send(bytes);
+        match &self.data_sender {
+            Some(sender) => {
+                let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
+                let bytes = bytes::Bytes::copy_from_slice(slice);
+                trace!("Writing received data to pipe");
+                sender.send(bytes);
+            }
+            None => return Ok(()),
+        };
         Ok(())
     }
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
+        // todo, drop(self.data_sender);
         Ok(())
     }
 }
