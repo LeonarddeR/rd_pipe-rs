@@ -13,6 +13,7 @@ features = [
 ]
 
 [dependencies.windows]
+git = "https://github.com/microsoft/windows-rs"
 version = "0.39"
 features = [
     "implement",
@@ -24,7 +25,7 @@ features = [
 [dependencies.tokio]
 version = "1"
 features = [
-    "rt",
+    "rt-multi-thread",
     "net",
     "io-util",
     "sync",

@@ -14,6 +14,7 @@ rd_pipe-core = { path = "../core" }
 
 [dependencies.windows]
 version = "0.39"
+git = "https://github.com/microsoft/windows-rs"
 features = [
     "Win32_System_Com",
 ]

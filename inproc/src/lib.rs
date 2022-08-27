@@ -1,30 +1,13 @@
-use lazy_static::lazy_static;
 use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
 use std::{ffi::c_void, mem::transmute, panic};
-use tokio::{
-    runtime::{Builder, Runtime},
-    task::JoinHandle,
-};
-
 use tracing::{debug, error, instrument, trace};
-use windows::Win32::{
-    Foundation::BOOL,
-    System::{
-        LibraryLoader::DisableThreadLibraryCalls,
-        SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
-    },
-};
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
-        Foundation::{E_UNEXPECTED, HINSTANCE, S_OK},
-        System::{Com::IClassFactory, RemoteDesktop::IWTSPlugin},
+        Foundation::{E_UNEXPECTED, HINSTANCE, S_OK, BOOL},
+        System::{Com::IClassFactory, RemoteDesktop::IWTSPlugin, LibraryLoader::DisableThreadLibraryCalls, SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH}},
     },
 };
-
-lazy_static! {
-    static ref ASYNC_RUNTIME: Runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-}
 
 #[no_mangle]
 #[instrument]
@@ -71,7 +54,6 @@ pub extern "stdcall" fn DllGetClassObject(
         debug!("DllGetClassObject called for unknown interface: {:?}", riid);
         return E_UNEXPECTED;
     }
-    wake_runtime();
     debug!("Constructing class factory");
     let factory = ClassFactory;
     let factory: IClassFactory = factory.into();
@@ -109,15 +91,10 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
             return E_UNEXPECTED;
         }
         let ppo = unsafe { &mut *ppo };
-        wake_runtime();
         debug!("Constructing the plugin");
         let plugin: IWTSPlugin = RdPipePlugin::new().into();
         debug!("Setting result pointer to plugin");
         *ppo = unsafe { transmute(plugin) };
     }
     S_OK
-}
-
-fn wake_runtime() -> JoinHandle<()> {
-    ASYNC_RUNTIME.spawn(async move {})
 }
