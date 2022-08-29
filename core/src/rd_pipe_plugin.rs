@@ -173,14 +173,14 @@ impl RdPipeChannelCallback {
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: String,
     ) -> JoinHandle<io::Result<()>> {
-        let runtime = self.async_runtime.clone();
         let writer = self.pipe_writer.clone();
-        runtime.spawn(async move {
+        self.async_runtime.spawn(async move {
             trace!("Creating first pipe server with address {}", pipe_addr);
             let mut server = ServerOptions::new()
                 .first_pipe_instance(true)
-                .max_instances(1)
-                .create(&pipe_addr)?;
+                .max_instances(2)
+                .create(&pipe_addr)
+                .unwrap();
             loop {
                 trace!("Initiate connection to pipe client");
                 server.connect().await.unwrap();
@@ -190,7 +190,10 @@ impl RdPipeChannelCallback {
                     *writer_guard = Some(server_writer);
                 }
                 trace!("Pipe client connected. Replacing server for new clients, if any");
-                server = ServerOptions::new().max_instances(1).create(&pipe_addr)?;
+                server = ServerOptions::new()
+                    .max_instances(2)
+                    .create(&pipe_addr)
+                    .unwrap();
                 trace!("Initiating pipe_reader loop");
                 loop {
                     let mut buf = Vec::with_capacity(4096);
@@ -205,14 +208,21 @@ impl RdPipeChannelCallback {
                             unsafe { channel.Write(&mut buf, None) }.unwrap();
                         }
                         Err(e) if e.kind() == WouldBlock => {
+                            warn!("Reading pipe would block: {}", e);
                             continue;
                         }
                         Err(e) => {
                             error!("Error reading from pipe server: {}", e);
-                            return Err(e);
+                            break;
                         }
                     }
                 }
+                trace!("End of pipe_reader loop, releasing writer");
+                {
+                    let mut writer_guard = writer.lock().unwrap();
+                    *writer_guard = None;
+                }
+                trace!("Writer released");
             }
         })
     }
@@ -228,21 +238,30 @@ impl Drop for RdPipeChannelCallback {
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
+        debug!("Data received, buffer has size {}", cbsize);
         let mut writer_lock = self.pipe_writer.lock().unwrap();
         match writer_lock.as_mut() {
             Some(writer) => {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-                trace!("Writing received data to sender");
+                trace!("Writing received data to pipe");
                 self.async_runtime.block_on(writer.write(slice)).unwrap();
             }
-            None => {}
+            None => {
+                debug!("Data received without an open named pipe");
+            }
         }
         Ok(())
     }
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        // todo, drop(self.data_sender);
+        let mut writer_lock = self.pipe_writer.lock().unwrap();
+        match writer_lock.as_mut() {
+            Some(writer) => {
+                self.async_runtime.block_on(writer.shutdown()).unwrap();
+            }
+            None => {}
+        }
         Ok(())
     }
 }
