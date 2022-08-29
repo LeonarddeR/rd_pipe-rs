@@ -175,13 +175,15 @@ impl RdPipeChannelCallback {
     ) -> JoinHandle<io::Result<()>> {
         let writer = self.pipe_writer.clone();
         self.async_runtime.spawn(async move {
-            trace!("Creating first pipe server with address {}", pipe_addr);
-            let mut server = ServerOptions::new()
-                .first_pipe_instance(true)
-                .max_instances(2)
-                .create(&pipe_addr)
-                .unwrap();
+            let mut first_pipe_instance = true;
             loop {
+                trace!("Creating pipe server with address {}", pipe_addr);
+                let server = ServerOptions::new()
+                    .first_pipe_instance(first_pipe_instance)
+                    .max_instances(1)
+                    .create(&pipe_addr)
+                    .unwrap();
+                first_pipe_instance = false;
                 trace!("Initiate connection to pipe client");
                 server.connect().await.unwrap();
                 let (mut server_reader, server_writer) = split(server);
@@ -189,16 +191,11 @@ impl RdPipeChannelCallback {
                     let mut writer_guard = writer.lock().unwrap();
                     *writer_guard = Some(server_writer);
                 }
-                trace!("Pipe client connected. Replacing server for new clients, if any");
-                server = ServerOptions::new()
-                    .max_instances(2)
-                    .create(&pipe_addr)
-                    .unwrap();
-                trace!("Initiating pipe_reader loop");
+                trace!("Pipe client connected. initiating pipe_reader loop");
                 loop {
                     let mut buf = Vec::with_capacity(4096);
                     match server_reader.read(&mut buf).await {
-                        Ok(n) if n == 0 => {
+                        Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
                             break;
                         }
