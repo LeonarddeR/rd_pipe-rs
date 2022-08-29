@@ -196,21 +196,14 @@ impl RdPipeChannelCallback {
             ));
             trace!("Entering pipe writer loop");
             loop {
-                tokio::select! {
-                    _ = pipe_reader_handle => {
-                        return Ok(());
+                match data_receiver.recv().await {
+                    Some(b) => {
+                        server_writer.write(&b).await?;
                     }
-                    val = data_receiver.recv() => {
-                        match val {
-                            Some(b) => {
-                                server_writer.write(&b).await?;
-                            },
-                            None => {
-                                debug!("Receiver closed");
-                                server_writer.shutdown().await?;
-                                break;
-                            }
-                        }
+                    None => {
+                        debug!("Receiver closed");
+                        server_writer.shutdown().await?;
+                        break;
                     }
                 }
             }
