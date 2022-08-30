@@ -13,7 +13,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
     core::{implement, AgileReference, Error, Interface, Result},
     Win32::{
-        Foundation::{BOOL, BSTR, E_UNEXPECTED},
+        Foundation::{BOOL, BSTR, E_UNEXPECTED, S_FALSE},
         System::RemoteDesktop::{
             IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
             IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
@@ -76,7 +76,7 @@ impl IWTSPlugin_Impl for RdPipePlugin {
 
     #[instrument]
     fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
-        info!("Client connected with {}", dwdisconnectcode);
+        info!("Client disconnected with {}", dwdisconnectcode);
         Ok(())
     }
 
@@ -126,7 +126,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
-            RdPipeChannelCallback::new(channel, &self.name, self.async_runtime.clone()).into();
+            RdPipeChannelCallback::new(self.async_runtime.clone(), channel, &self.name).into();
         trace!("Callback {:?} created", callback);
         *ppcallback = Some(callback);
         Ok(())
@@ -145,9 +145,9 @@ pub struct RdPipeChannelCallback {
 impl RdPipeChannelCallback {
     #[instrument]
     pub fn new(
+        async_runtime: Arc<Runtime>,
         channel: IWTSVirtualChannel,
         channel_name: &str,
-        async_runtime: Arc<Runtime>,
     ) -> RdPipeChannelCallback {
         let addr = format!(
             "{}_{}_{}",
@@ -193,8 +193,8 @@ impl RdPipeChannelCallback {
                 }
                 trace!("Pipe client connected. Initiating pipe_reader loop");
                 loop {
-                    let mut buf = [0; 4096];
-                    match server_reader.read(&mut buf).await {
+                    let mut buf = Vec::with_capacity(4096);
+                    match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
                             break;
@@ -237,27 +237,26 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);
         let mut writer_lock = self.pipe_writer.lock().unwrap();
-        match writer_lock.as_mut() {
-            Some(writer) => {
+        match *writer_lock {
+            Some(ref mut writer) => {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-                trace!("Writing received data to pipe");
+                trace!("Writing received data to pipe: {:?}", slice);
                 self.async_runtime.block_on(writer.write(slice)).unwrap();
+                trace!("Received data written to pipe");
+                Ok(())
             }
             None => {
                 debug!("Data received without an open named pipe");
+                Err(Error::from(S_FALSE))
             }
         }
-        Ok(())
     }
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
         let mut writer_lock = self.pipe_writer.lock().unwrap();
-        match writer_lock.as_mut() {
-            Some(writer) => {
-                self.async_runtime.block_on(writer.shutdown()).unwrap();
-            }
-            None => {}
+        if let Some(ref mut writer) = *writer_lock {
+            self.async_runtime.block_on(writer.shutdown()).unwrap();
         }
         Ok(())
     }
