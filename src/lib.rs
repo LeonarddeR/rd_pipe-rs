@@ -1,5 +1,5 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
-// Main library entrypoint for inproc crate
+// Main library entrypoint
 // Copyright (C) 2022 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -12,9 +12,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use rd_pipe_core::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
-use std::{ffi::c_void, mem::transmute, panic};
-use tracing::{debug, error, instrument, trace};
+pub mod class_factory;
+pub mod rd_pipe_plugin;
+
+use std::{ffi::c_void, panic, mem::transmute};
+
+use tracing::{instrument, error, trace, debug};
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
@@ -27,6 +30,8 @@ use windows::{
         },
     },
 };
+
+use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
 
 #[no_mangle]
 #[instrument]
