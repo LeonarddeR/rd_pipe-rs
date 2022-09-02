@@ -13,9 +13,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use core::slice;
+use parking_lot::Mutex;
 use std::{
     io::{self, ErrorKind::WouldBlock},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
@@ -203,7 +204,7 @@ impl RdPipeChannelCallback {
                 server.connect().await.unwrap();
                 let (mut server_reader, server_writer) = split(server);
                 {
-                    let mut writer_guard = writer.lock().unwrap();
+                    let mut writer_guard = writer.lock();
                     *writer_guard = Some(server_writer);
                 }
                 trace!("Pipe client connected. Initiating pipe_reader loop");
@@ -217,7 +218,7 @@ impl RdPipeChannelCallback {
                         Ok(n) => {
                             trace!("read {} bytes", n);
                             let channel = channel_agile.resolve().unwrap();
-                            unsafe { channel.Write(&mut buf, None) }.unwrap();
+                            unsafe { channel.Write(&buf, None) }.unwrap();
                         }
                         Err(e) if e.kind() == WouldBlock => {
                             warn!("Reading pipe would block: {}", e);
@@ -231,7 +232,7 @@ impl RdPipeChannelCallback {
                 }
                 trace!("End of pipe_reader loop, releasing writer");
                 {
-                    let mut writer_guard = writer.lock().unwrap();
+                    let mut writer_guard = writer.lock();
                     *writer_guard = None;
                 }
                 trace!("Writer released");
@@ -251,7 +252,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);
-        let mut writer_lock = self.pipe_writer.lock().unwrap();
+        let mut writer_lock = self.pipe_writer.lock();
         match *writer_lock {
             Some(ref mut writer) => {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
@@ -269,7 +270,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        let mut writer_lock = self.pipe_writer.lock().unwrap();
+        let mut writer_lock = self.pipe_writer.lock();
         if let Some(ref mut writer) = *writer_lock {
             self.async_runtime.block_on(writer.shutdown()).unwrap();
         }
