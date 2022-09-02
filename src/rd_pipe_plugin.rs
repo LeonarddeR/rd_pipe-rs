@@ -45,11 +45,11 @@ pub struct RdPipePlugin {
 
 impl RdPipePlugin {
     #[instrument]
-    pub fn new() -> RdPipePlugin {
+    pub fn new() -> Self {
         trace!("Constructing runtime");
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
         trace!("Constructing plugin");
-        RdPipePlugin {
+        Self {
             async_runtime: Arc::new(runtime),
         }
     }
@@ -111,8 +111,8 @@ pub struct RdPipeListenerCallback {
 
 impl RdPipeListenerCallback {
     #[instrument]
-    pub fn new(name: &str, async_runtime: Arc<Runtime>) -> RdPipeListenerCallback {
-        RdPipeListenerCallback {
+    pub fn new(name: &str, async_runtime: Arc<Runtime>) -> Self {
+        Self {
             name: name.to_string(),
             async_runtime,
         }
@@ -163,7 +163,7 @@ impl RdPipeChannelCallback {
         async_runtime: Arc<Runtime>,
         channel: IWTSVirtualChannel,
         channel_name: &str,
-    ) -> RdPipeChannelCallback {
+    ) -> Self {
         let addr = format!(
             "{}_{}_{}_{}",
             PIPE_NAME_PREFIX,
@@ -174,7 +174,7 @@ impl RdPipeChannelCallback {
         debug!("Creating agile reference to channel");
         let channel_agile = AgileReference::new(&channel).unwrap();
         debug!("Constructing the callback");
-        let callback = RdPipeChannelCallback {
+        let callback = Self {
             async_runtime,
             pipe_writer: Arc::new(Mutex::new(None)),
         };
