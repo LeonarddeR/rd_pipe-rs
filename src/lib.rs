@@ -15,9 +15,10 @@
 pub mod class_factory;
 pub mod rd_pipe_plugin;
 
-use std::{ffi::c_void, panic, mem::transmute};
-
-use tracing::{instrument, error, trace, debug};
+use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
+use std::{ffi::c_void, mem::transmute, panic};
+use tokio::runtime::Runtime;
+use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
@@ -31,7 +32,12 @@ use windows::{
     },
 };
 
-use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
+lazy_static::lazy_static! {
+    static ref ASYNC_RUNTIME: Runtime = {
+        trace!("Constructing runtime");
+        tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+    };
+}
 
 #[no_mangle]
 #[instrument]

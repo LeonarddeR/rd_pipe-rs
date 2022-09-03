@@ -21,7 +21,6 @@ use std::{
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    runtime::{Builder, Runtime},
     task::JoinHandle,
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -37,21 +36,17 @@ use windows::{
     },
 };
 
+use crate::ASYNC_RUNTIME;
+
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
-pub struct RdPipePlugin {
-    async_runtime: Arc<Runtime>,
-}
+pub struct RdPipePlugin;
 
 impl RdPipePlugin {
     #[instrument]
     pub fn new() -> Self {
-        trace!("Constructing runtime");
-        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
         trace!("Constructing plugin");
-        Self {
-            async_runtime: Arc::new(runtime),
-        }
+        Self
     }
 
     #[instrument]
@@ -61,8 +56,7 @@ impl RdPipePlugin {
         channel_name: &str,
     ) -> Result<IWTSListener> {
         debug!("Creating listener with name {}", channel_name);
-        let callback: IWTSListenerCallback =
-            RdPipeListenerCallback::new(channel_name, self.async_runtime.clone()).into();
+        let callback: IWTSListenerCallback = RdPipeListenerCallback::new(channel_name).into();
         unsafe {
             channel_mgr.CreateListener(&*format!("{}\0", channel_name).as_ptr(), 0, &callback)
         }
@@ -105,16 +99,14 @@ impl IWTSPlugin_Impl for RdPipePlugin {
 #[derive(Debug)]
 #[implement(IWTSListenerCallback)]
 pub struct RdPipeListenerCallback {
-    async_runtime: Arc<Runtime>,
     name: String,
 }
 
 impl RdPipeListenerCallback {
     #[instrument]
-    pub fn new(name: &str, async_runtime: Arc<Runtime>) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            async_runtime,
         }
     }
 }
@@ -141,7 +133,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
-            RdPipeChannelCallback::new(self.async_runtime.clone(), channel, &self.name).into();
+            RdPipeChannelCallback::new(channel, &self.name).into();
         trace!("Callback {:?} created", callback);
         *ppcallback = Some(callback);
         Ok(())
@@ -153,17 +145,12 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-    async_runtime: Arc<Runtime>,
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
 }
 
 impl RdPipeChannelCallback {
     #[instrument]
-    pub fn new(
-        async_runtime: Arc<Runtime>,
-        channel: IWTSVirtualChannel,
-        channel_name: &str,
-    ) -> Self {
+    pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> Self {
         let addr = format!(
             "{}_{}_{}_{}",
             PIPE_NAME_PREFIX,
@@ -175,7 +162,6 @@ impl RdPipeChannelCallback {
         let channel_agile = AgileReference::new(&channel).unwrap();
         debug!("Constructing the callback");
         let callback = Self {
-            async_runtime,
             pipe_writer: Arc::new(Mutex::new(None)),
         };
         debug!("Spawning process_messages task");
@@ -190,7 +176,7 @@ impl RdPipeChannelCallback {
         pipe_addr: String,
     ) -> JoinHandle<io::Result<()>> {
         let writer = self.pipe_writer.clone();
-        self.async_runtime.spawn(async move {
+        ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
             loop {
                 trace!("Creating pipe server with address {}", pipe_addr);
@@ -257,7 +243,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
             Some(ref mut writer) => {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
                 trace!("Writing received data to pipe: {:?}", slice);
-                self.async_runtime.block_on(writer.write(slice)).unwrap();
+                ASYNC_RUNTIME.block_on(writer.write(slice)).unwrap();
                 trace!("Received data written to pipe");
                 Ok(())
             }
@@ -272,7 +258,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
     fn OnClose(&self) -> Result<()> {
         let mut writer_lock = self.pipe_writer.lock();
         if let Some(ref mut writer) = *writer_lock {
-            self.async_runtime.block_on(writer.shutdown()).unwrap();
+            ASYNC_RUNTIME.block_on(writer.shutdown()).unwrap();
         }
         Ok(())
     }
