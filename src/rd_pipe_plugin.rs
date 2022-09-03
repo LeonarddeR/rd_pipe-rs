@@ -15,6 +15,7 @@
 use core::slice;
 use parking_lot::Mutex;
 use std::{
+    env,
     io::{self, ErrorKind::WouldBlock},
     sync::Arc,
 };
@@ -73,7 +74,12 @@ impl IWTSPlugin_Impl for RdPipePlugin {
                 return Err(Error::from(E_UNEXPECTED));
             }
         };
-        self.create_listener(channel_mgr, "TestChannel")?;
+        let channel_names_var: String =
+            env::var("RD_PIPE_CHANNELS").unwrap_or(String::from("RDPipe"));
+        let channel_names = channel_names_var.split(";");
+        for name in channel_names {
+            self.create_listener(channel_mgr, name.trim())?;
+        }
         Ok(())
     }
 
@@ -140,7 +146,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
     }
 }
 
-const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RdPipe";
+const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
