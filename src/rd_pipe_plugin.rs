@@ -26,9 +26,9 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
-    core::{implement, AgileReference, Error, Interface, Result},
+    core::{implement, AgileReference, Error, Interface, Result, BSTR},
     Win32::{
-        Foundation::{BOOL, BSTR, E_UNEXPECTED, S_FALSE},
+        Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
         System::RemoteDesktop::{
             IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
             IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
