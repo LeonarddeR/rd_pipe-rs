@@ -26,7 +26,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
-    core::{implement, AgileReference, Error, Result, BSTR, Vtable},
+    core::{implement, AgileReference, Error, Result, Vtable, BSTR, PCSTR},
     Win32::{
         Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
         System::RemoteDesktop::{
@@ -59,7 +59,11 @@ impl RdPipePlugin {
         debug!("Creating listener with name {}", channel_name);
         let callback: IWTSListenerCallback = RdPipeListenerCallback::new(channel_name).into();
         unsafe {
-            channel_mgr.CreateListener(&*format!("{}\0", channel_name).as_ptr(), 0, &callback)
+            channel_mgr.CreateListener(
+                PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
+                0,
+                &callback,
+            )
         }
     }
 }
