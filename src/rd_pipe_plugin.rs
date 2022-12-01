@@ -1,4 +1,5 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
+// RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 // Dynamic Virtual Channel Plugin structs
 // Copyright (C) 2022 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
@@ -14,8 +15,8 @@
 
 use core::slice;
 use parking_lot::Mutex;
+use std::ffi::c_void;
 use std::{
-    env,
     io::{self, ErrorKind::WouldBlock},
     sync::Arc,
 };
@@ -27,17 +28,26 @@ use tokio::{
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
     core::{implement, AgileReference, Error, Result, Vtable, BSTR, PCSTR},
+    s,
     Win32::{
-        Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
-        System::RemoteDesktop::{
-            IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
-            IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-            IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
+        Foundation::{BOOL, ERROR_SUCCESS, E_UNEXPECTED, S_FALSE},
+        System::{
+            Registry::{
+                RegGetValueA, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ,
+            },
+            RemoteDesktop::{
+                IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
+                IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
+                IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
+            },
         },
     },
 };
 
 use crate::ASYNC_RUNTIME;
+
+const REG_PATH: PCSTR = s!(r#"Software\Microsoft\Terminal Server Client\Default\AddIns\RdPipe"#);
+const REG_VALUE: PCSTR = s!("ChannelNames");
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
@@ -54,17 +64,52 @@ impl RdPipePlugin {
     fn create_listener(
         &self,
         channel_mgr: &IWTSVirtualChannelManager,
-        channel_name: &str,
+        channel_name: PCSTR,
     ) -> Result<IWTSListener> {
-        debug!("Creating listener with name {}", channel_name);
-        let callback: IWTSListenerCallback = RdPipeListenerCallback::new(channel_name).into();
-        unsafe {
-            channel_mgr.CreateListener(
-                PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
-                0,
-                &callback,
+        debug!("Creating listener with name {:?}", channel_name);
+        let callback: IWTSListenerCallback =
+            RdPipeListenerCallback::new(unsafe { channel_name.to_string() }.unwrap()).into();
+        unsafe { channel_mgr.CreateListener(channel_name, 0, &callback) }
+    }
+
+    #[instrument]
+    fn get_channel_names_from_registry(parent_key: HKEY) -> Result<Vec<PCSTR>> {
+        let mut size: u32 = 0;
+        let size_ptr: *mut u32 = &mut size;
+        let res = unsafe {
+            RegGetValueA(
+                parent_key,
+                REG_PATH,
+                REG_VALUE,
+                RRF_RT_REG_MULTI_SZ,
+                None,
+                None,
+                Some(size_ptr),
             )
+        };
+        if res != ERROR_SUCCESS {
+            return Err(Error::from(res));
         }
+        let mut value: Vec<u8> = vec![0; size as _];
+        let res = unsafe {
+            RegGetValueA(
+                parent_key,
+                REG_PATH,
+                REG_VALUE,
+                RRF_RT_REG_MULTI_SZ,
+                None,
+                Some(value.as_mut_ptr() as *mut c_void),
+                Some(size_ptr),
+            )
+        };
+        if res != ERROR_SUCCESS {
+            return Err(Error::from(res));
+        }
+        let v = (value[0..(size as usize - 1)])
+            .split_inclusive(|c| *c == 0)
+            .map(|s| PCSTR::from_raw(s.as_ptr()))
+            .collect::<Vec<PCSTR>>();
+        Ok(v)
     }
 }
 
@@ -78,11 +123,19 @@ impl IWTSPlugin_Impl for RdPipePlugin {
                 return Err(Error::from(E_UNEXPECTED));
             }
         };
-        let channel_names_var: String =
-            env::var("RD_PIPE_CHANNELS").unwrap_or(String::from("RDPipe"));
-        let channel_names = channel_names_var.split(";");
-        for name in channel_names {
-            self.create_listener(channel_mgr, name.trim())?;
+        let mut channels: Vec<PCSTR> = Vec::new();
+        channels.extend(
+            RdPipePlugin::get_channel_names_from_registry(HKEY_CURRENT_USER).unwrap_or_default(),
+        );
+        channels.extend(
+            RdPipePlugin::get_channel_names_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
+        );
+        if channels.len() == 0 {
+            error!("No channels in registry");
+            return Err(Error::from(E_UNEXPECTED));
+        }
+        for channel_name in channels {
+            self.create_listener(channel_mgr, channel_name)?;
         }
         Ok(())
     }
@@ -114,10 +167,8 @@ pub struct RdPipeListenerCallback {
 
 impl RdPipeListenerCallback {
     #[instrument]
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-        }
+    pub fn new(name: String) -> Self {
+        Self { name: name }
     }
 }
 
