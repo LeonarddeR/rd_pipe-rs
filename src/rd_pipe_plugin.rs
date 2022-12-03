@@ -66,7 +66,9 @@ impl RdPipePlugin {
         channel_mgr: &IWTSVirtualChannelManager,
         channel_name: PCSTR,
     ) -> Result<IWTSListener> {
-        debug!("Creating listener with name {:?}", channel_name);
+        debug!("Creating listener with name {}", unsafe {
+            channel_name.to_string().unwrap_or_default()
+        });
         let callback: IWTSListenerCallback =
             RdPipeListenerCallback::new(unsafe { channel_name.to_string() }.unwrap()).into();
         unsafe { channel_mgr.CreateListener(channel_name, 0, &callback) }
@@ -105,10 +107,11 @@ impl RdPipePlugin {
         if res != ERROR_SUCCESS {
             return Err(Error::from(res));
         }
-        let v = (value[0..(size as usize - 1)])
+        let v: Vec<PCSTR> = value
             .split_inclusive(|c| *c == 0)
+            .filter(|s| s[0] != 0)
             .map(|s| PCSTR::from_raw(s.as_ptr()))
-            .collect::<Vec<PCSTR>>();
+            .collect();
         Ok(v)
     }
 }
