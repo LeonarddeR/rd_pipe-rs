@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use core::slice;
+use itertools::Itertools;
 use parking_lot::Mutex;
 use std::ffi::c_void;
 use std::{
@@ -75,7 +76,7 @@ impl RdPipePlugin {
     }
 
     #[instrument]
-    fn get_channel_names_from_registry(parent_key: HKEY) -> Result<Vec<PCSTR>> {
+    fn get_channel_names_from_registry(parent_key: HKEY) -> Result<Vec<Vec<u8>>> {
         let mut size: u32 = 0;
         let size_ptr: *mut u32 = &mut size;
         let res = unsafe {
@@ -107,10 +108,10 @@ impl RdPipePlugin {
         if res != ERROR_SUCCESS {
             return Err(Error::from(res));
         }
-        let v: Vec<PCSTR> = value
+        let v: Vec<Vec<u8>> = value
             .split_inclusive(|c| *c == 0)
             .filter(|s| s[0] != 0)
-            .map(|s| PCSTR::from_raw(s.as_ptr()))
+            .map(|s| s.to_owned())
             .collect();
         Ok(v)
     }
@@ -126,7 +127,7 @@ impl IWTSPlugin_Impl for RdPipePlugin {
                 return Err(Error::from(E_UNEXPECTED));
             }
         };
-        let mut channels: Vec<PCSTR> = Vec::new();
+        let mut channels: Vec<Vec<u8>> = Vec::new();
         channels.extend(
             RdPipePlugin::get_channel_names_from_registry(HKEY_CURRENT_USER).unwrap_or_default(),
         );
@@ -137,8 +138,8 @@ impl IWTSPlugin_Impl for RdPipePlugin {
             error!("No channels in registry");
             return Err(Error::from(E_UNEXPECTED));
         }
-        for channel_name in channels {
-            self.create_listener(channel_mgr, channel_name)?;
+        for channel_name in channels.iter().unique() {
+            self.create_listener(channel_mgr, PCSTR::from_raw(channel_name.as_ptr()))?;
         }
         Ok(())
     }
