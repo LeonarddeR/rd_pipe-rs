@@ -27,8 +27,8 @@ jobs:
           command: fmt
           args: --all -- --check
 
-  test:
-    name: Test
+  build:
+    name: Build
     runs-on: windows-latest
     strategy:
       matrix:
@@ -38,6 +38,7 @@ jobs:
             x86_64-pc-windows-msvc,
             aarch64-pc-windows-msvc,
           ]
+        suffix: [x86, x64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -53,3 +54,10 @@ jobs:
         with:
           command: build
           args: --release --target ${{ matrix.target }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: rd_pipe_${{ matrix.target }}
+          path: |
+            target/release/*.dll*
+            target/release/*.pdb
