@@ -38,7 +38,6 @@ jobs:
             x86_64-pc-windows-msvc,
             aarch64-pc-windows-msvc,
           ]
-        suffix: [x86, x64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -57,7 +56,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: rd_pipe_${{ matrix.target }}
+          name: rd_pipe
           path: |
-            target/release/*.dll*
-            target/release/*.pdb
+            ./target/release/*.dll*
+            ./target/release/*.pdb
