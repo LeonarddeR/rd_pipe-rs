@@ -57,6 +57,4 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: rd_pipe
-          path: |
-            ./target/release/*.dll*
-            ./target/release/*.pdb
+          path: ./target/*
