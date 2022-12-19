@@ -23,7 +23,7 @@ use std::{
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
-    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions},
     task::JoinHandle,
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -248,6 +248,7 @@ impl RdPipeChannelCallback {
                 let server = ServerOptions::new()
                     .first_pipe_instance(first_pipe_instance)
                     .max_instances(1)
+                    .pipe_mode(PipeMode::Message)
                     .create(&pipe_addr)
                     .unwrap();
                 first_pipe_instance = false;
