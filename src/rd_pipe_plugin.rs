@@ -260,7 +260,7 @@ impl RdPipeChannelCallback {
                 }
                 trace!("Pipe client connected. Initiating pipe_reader loop");
                 loop {
-                    let mut buf = Vec::with_capacity(4096);
+                    let mut buf = Vec::with_capacity(64 *1024);
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
