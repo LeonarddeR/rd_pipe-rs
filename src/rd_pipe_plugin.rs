@@ -217,9 +217,8 @@ impl RdPipeChannelCallback {
     #[instrument]
     pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> Self {
         let addr = format!(
-            "{}_{}_{}_{}",
+            "{}_{}_{}",
             PIPE_NAME_PREFIX,
-            std::process::id(),
             channel_name,
             channel.as_raw() as usize
         );
