@@ -271,7 +271,10 @@ impl RdPipeChannelCallback {
                             let channel = channel_agile.resolve().unwrap();
                             match unsafe { channel.Write(&buf, None) } {
                                 Ok(_) => trace!("Wrote {} bytes to channel", n),
-                                Err(e) => error!("Error during write to channel: {}", e),
+                                Err(e) => {
+                                    error!("Error during write to channel: {}", e);
+                                    break;
+                                }
                             }
                         }
                         Err(e) if e.kind() == WouldBlock => {
