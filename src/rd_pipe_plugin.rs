@@ -23,7 +23,7 @@ use std::{
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
-    net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions},
+    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
     task::JoinHandle,
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -247,7 +247,7 @@ impl RdPipeChannelCallback {
                 let server = ServerOptions::new()
                     .first_pipe_instance(first_pipe_instance)
                     .max_instances(1)
-                    .pipe_mode(PipeMode::Message)
+                    //.pipe_mode(PipeMode::Message)
                     .create(&pipe_addr)
                     .unwrap();
                 first_pipe_instance = false;
@@ -260,7 +260,7 @@ impl RdPipeChannelCallback {
                 }
                 trace!("Pipe client connected. Initiating pipe_reader loop");
                 loop {
-                    let mut buf = Vec::with_capacity(64 *1024);
+                    let mut buf = Vec::with_capacity(64 * 1024);
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
@@ -269,7 +269,10 @@ impl RdPipeChannelCallback {
                         Ok(n) => {
                             trace!("read {} bytes", n);
                             let channel = channel_agile.resolve().unwrap();
-                            unsafe { channel.Write(&buf, None) }.unwrap();
+                            match unsafe { channel.Write(&buf, None) } {
+                                Ok(_) => trace!("Wrote {} bytes to channel", n),
+                                Err(e) => error!("Error during write to channel: {}", e),
+                            }
                         }
                         Err(e) if e.kind() == WouldBlock => {
                             warn!("Reading pipe would block: {}", e);
