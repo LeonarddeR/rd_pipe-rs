@@ -25,6 +25,7 @@ use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
     task::JoinHandle,
+    time::{sleep, Duration},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
@@ -244,12 +245,18 @@ impl RdPipeChannelCallback {
             let mut first_pipe_instance = true;
             loop {
                 trace!("Creating pipe server with address {}", pipe_addr);
-                let server = ServerOptions::new()
+                let server = match ServerOptions::new()
                     .first_pipe_instance(first_pipe_instance)
                     .max_instances(1)
-                    //.pipe_mode(PipeMode::Message)
                     .create(&pipe_addr)
-                    .unwrap();
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Error while creating named pipe server: {}", e);
+                        sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 first_pipe_instance = false;
                 trace!("Initiate connection to pipe client");
                 server.connect().await.unwrap();

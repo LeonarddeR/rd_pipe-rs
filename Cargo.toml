@@ -53,5 +53,6 @@ version = "1.23.0"
 features = [
     "rt-multi-thread",
     "net",
-    "io-util"
+    "io-util",
+    "time"
 ]
