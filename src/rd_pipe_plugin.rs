@@ -17,10 +17,7 @@ use core::slice;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use std::ffi::c_void;
-use std::{
-    io::{self, ErrorKind::WouldBlock},
-    sync::Arc,
-};
+use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
@@ -212,6 +209,7 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
+    join_handle: JoinHandle<()>,
 }
 
 impl RdPipeChannelCallback {
@@ -225,22 +223,21 @@ impl RdPipeChannelCallback {
         );
         debug!("Creating agile reference to channel");
         let channel_agile = AgileReference::new(&channel).unwrap();
+        let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
         let callback = Self {
-            pipe_writer: Arc::new(Mutex::new(None)),
+            pipe_writer: pipe_writer.clone(),
+            join_handle: Self::process_pipe(pipe_writer.clone(), channel_agile, addr),
         };
-        debug!("Spawning process_messages task");
-        callback.process_pipe(channel_agile, addr);
         callback
     }
 
     #[instrument]
-    fn process_pipe(
-        &self,
+    pub fn process_pipe(
+        writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: String,
-    ) -> JoinHandle<io::Result<()>> {
-        let writer = self.pipe_writer.clone();
+    ) -> JoinHandle<()> {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
             loop {
@@ -266,12 +263,12 @@ impl RdPipeChannelCallback {
                     *writer_guard = Some(server_writer);
                 }
                 trace!("Pipe client connected. Initiating pipe_reader loop");
-                loop {
+                'reader: loop {
                     let mut buf = Vec::with_capacity(64 * 1024);
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
-                            break;
+                            break 'reader;
                         }
                         Ok(n) => {
                             trace!("read {} bytes", n);
@@ -280,7 +277,6 @@ impl RdPipeChannelCallback {
                                 Ok(_) => trace!("Wrote {} bytes to channel", n),
                                 Err(e) => {
                                     error!("Error during write to channel: {}", e);
-                                    break;
                                 }
                             }
                         }
@@ -289,8 +285,8 @@ impl RdPipeChannelCallback {
                             continue;
                         }
                         Err(e) => {
-                            error!("Error reading from pipe server: {}", e);
-                            break;
+                            error!("Error reading from pipe client: {}", e);
+                            break 'reader;
                         }
                     }
                 }
@@ -338,6 +334,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
         if let Some(ref mut writer) = *writer_lock {
             ASYNC_RUNTIME.block_on(writer.shutdown()).unwrap();
         }
+        self.join_handle.abort();
         Ok(())
     }
 }
