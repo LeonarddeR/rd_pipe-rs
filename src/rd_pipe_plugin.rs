@@ -330,11 +330,14 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
-        let mut writer_lock = self.pipe_writer.lock();
-        if let Some(ref mut writer) = *writer_lock {
+        let mut writer_guard = self.pipe_writer.lock();
+        if let Some(ref mut writer) = *writer_guard {
             ASYNC_RUNTIME.block_on(writer.shutdown()).unwrap();
+            *writer_guard = None;
         }
-        self.join_handle.abort();
+        if !self.join_handle.is_finished() {
+            self.join_handle.abort();
+        }
         Ok(())
     }
 }
