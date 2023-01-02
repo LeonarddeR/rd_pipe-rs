@@ -205,14 +205,13 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 
-const MSG_EOT: u8 = 0x04;
-const MSG_NAK: u8 = 0x15;
+const MSG_XON: u8 = 0x11;
+const MSG_XOFF: u8 = 0x13;
 
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-    channel_agile: AgileReference<IWTSVirtualChannel>,
     join_handle: JoinHandle<()>,
 }
 
@@ -230,7 +229,6 @@ impl RdPipeChannelCallback {
         debug!("Constructing the callback");
         let callback = Self {
             pipe_writer: pipe_writer.clone(),
-            channel_agile: channel_agile.clone(),
             join_handle: Self::process_pipe(pipe_writer.clone(), channel_agile, addr),
         };
         callback
@@ -260,7 +258,18 @@ impl RdPipeChannelCallback {
                 };
                 first_pipe_instance = false;
                 trace!("Initiate connection to pipe client");
-                server.connect().await.unwrap();
+                match server.connect().await {
+                    Ok(_) => {
+                        let channel = channel_agile.resolve().unwrap();
+                        match unsafe { channel.Write(&[MSG_XON], None) } {
+                            Ok(_) => trace!("Wrote XON to channel"),
+                            Err(e) => {
+                                error!("Error writing XON to channel: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => error!("Error connecting to pipe client: {}", e)
+                }
                 let (mut server_reader, server_writer) = split(server);
                 {
                     let mut writer_guard = writer.lock();
@@ -273,10 +282,10 @@ impl RdPipeChannelCallback {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
                             let channel = channel_agile.resolve().unwrap();
-                            match unsafe { channel.Write(&[MSG_EOT], None) } {
-                                Ok(_) => trace!("Wrote EOT to channel"),
+                            match unsafe { channel.Write(&[MSG_XOFF], None) } {
+                                Ok(_) => trace!("Wrote XOFF to channel"),
                                 Err(e) => {
-                                    error!("Error writing EOT to channel: {}", e);
+                                    error!("Error writing XOFF to channel: {}", e);
                                 }
                             }
                             break 'reader;
@@ -297,6 +306,13 @@ impl RdPipeChannelCallback {
                         }
                         Err(e) => {
                             error!("Error reading from pipe client: {}", e);
+                            let channel = channel_agile.resolve().unwrap();
+                            match unsafe { channel.Write(&[MSG_XOFF], None) } {
+                                Ok(_) => trace!("Wrote XOFF to channel"),
+                                Err(e) => {
+                                    error!("Error writing XOFF to channel: {}", e);
+                                }
+                            }
                             break 'reader;
                         }
                     }
@@ -334,13 +350,6 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
             }
             None => {
                 debug!("Data received without an open named pipe");
-                let channel = self.channel_agile.resolve().unwrap();
-                match unsafe { channel.Write(&[MSG_NAK], None) } {
-                    Ok(_) => trace!("Wrote NAK to channel"),
-                    Err(e) => {
-                        error!("Error writing NAK t o channel: {}", e);
-                    }
-                }
                 Err(Error::from(S_FALSE))
             }
         }
