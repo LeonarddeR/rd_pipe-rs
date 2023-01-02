@@ -1,7 +1,7 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 // Dynamic Virtual Channel Plugin structs
-// Copyright (C) 2022 Leonard de Ruijter <alderuijter@gmail.com>
+// Copyright (C) 2022-2023 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
