@@ -48,7 +48,8 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
                 error!("{:?}", info);
             }));
             // Set up logging
-            let file_appender = tracing_appender::rolling::never("d:", "RdPipe.log");
+            let file_appender =
+                tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
             tracing_subscriber::fmt()
                 .compact()
                 .with_writer(file_appender)
