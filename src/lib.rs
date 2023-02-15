@@ -22,7 +22,7 @@ use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
-        Foundation::{BOOL, E_UNEXPECTED, HINSTANCE, S_OK},
+        Foundation::{BOOL, E_UNEXPECTED, HINSTANCE, S_OK, CLASS_E_CLASSNOTAVAILABLE},
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
@@ -68,21 +68,28 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
     BOOL::from(true)
 }
 
+pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
+
 #[no_mangle]
 #[instrument]
 pub extern "stdcall" fn DllGetClassObject(
-    _rclsid: *const GUID,
+    rclsid: *const GUID,
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
     debug!("DllGetClassObject called");
-    let riid = unsafe { *riid };
+    let clsid = unsafe { *rclsid };
+    let iid = unsafe { *riid };
     let ppv = unsafe { &mut *ppv };
     // ppv must be null if we fail so set it here for safety
     *ppv = std::ptr::null_mut();
 
-    if riid != IClassFactory::IID {
-        debug!("DllGetClassObject called for unknown interface: {:?}", riid);
+    if clsid != CLSID_RD_PIPE_PLUGIN {
+        debug!("DllGetClassObject called for unknown class: {:?}", clsid);
+        return CLASS_E_CLASSNOTAVAILABLE;
+    }
+    if iid != IClassFactory::IID {
+        debug!("DllGetClassObject called for unknown interface: {:?}", iid);
         return E_UNEXPECTED;
     }
     debug!("Constructing class factory");

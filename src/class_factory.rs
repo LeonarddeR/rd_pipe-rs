@@ -28,8 +28,6 @@ use windows::{
 
 use crate::rd_pipe_plugin::RdPipePlugin;
 
-pub const IID_I_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
-
 #[implement(IClassFactory)]
 #[derive(Debug)]
 pub struct ClassFactory;
@@ -50,16 +48,15 @@ impl IClassFactory_Impl for ClassFactory {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
         debug!("Creating plugin instance");
-        let plugin = RdPipePlugin::new();
         match iid {
             IUnknown::IID => {
                 trace!("Requested IUnknown");
-                let plugin: IUnknown = plugin.into();
+                let plugin: IUnknown = RdPipePlugin::new().into();
                 *object = unsafe { transmute(plugin) };
             }
             IWTSPlugin::IID => {
                 trace!("Requested IWTSPlugin");
-                let plugin: IWTSPlugin = plugin.into();
+                let plugin: IWTSPlugin = RdPipePlugin::new().into();
                 *object = unsafe { transmute(plugin) };
             }
             _ => return Err(Error::from(E_NOINTERFACE)),
