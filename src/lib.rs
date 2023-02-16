@@ -22,7 +22,7 @@ use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{Interface, GUID, HRESULT},
     Win32::{
-        Foundation::{BOOL, E_UNEXPECTED, HINSTANCE, S_OK, CLASS_E_CLASSNOTAVAILABLE},
+        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, HINSTANCE, S_OK},
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
