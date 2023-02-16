@@ -45,8 +45,9 @@ use windows::{
 
 use crate::ASYNC_RUNTIME;
 
-const REG_PATH: PCSTR = s!(r#"Software\Microsoft\Terminal Server Client\Default\AddIns\RdPipe"#);
-const REG_VALUE: PCSTR = s!("ChannelNames");
+pub const REG_PATH: PCSTR =
+    s!(r#"Software\Microsoft\Terminal Server Client\Default\AddIns\RdPipe"#);
+const REG_VALUE_CHANNEL_NAMES: PCSTR = s!("ChannelNames");
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
@@ -81,7 +82,7 @@ impl RdPipePlugin {
             RegGetValueA(
                 parent_key,
                 REG_PATH,
-                REG_VALUE,
+                REG_VALUE_CHANNEL_NAMES,
                 RRF_RT_REG_MULTI_SZ,
                 None,
                 None,
@@ -96,7 +97,7 @@ impl RdPipePlugin {
             RegGetValueA(
                 parent_key,
                 REG_PATH,
-                REG_VALUE,
+                REG_VALUE_CHANNEL_NAMES,
                 RRF_RT_REG_MULTI_SZ,
                 None,
                 Some(value.as_mut_ptr() as *mut c_void),

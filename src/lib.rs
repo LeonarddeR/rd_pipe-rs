@@ -16,16 +16,23 @@ pub mod class_factory;
 pub mod rd_pipe_plugin;
 
 use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
-use std::{ffi::c_void, mem::transmute, panic};
+use rd_pipe_plugin::REG_PATH;
+use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
-    core::{Interface, GUID, HRESULT},
+    core::{Error, Interface, Result, GUID, HRESULT, PCSTR},
+    s,
     Win32::{
-        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, HINSTANCE, S_OK},
+        Foundation::{
+            BOOL, CLASS_E_CLASSNOTAVAILABLE, ERROR_SUCCESS, E_UNEXPECTED, HINSTANCE, S_OK,
+        },
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
+            Registry::{
+                RegGetValueA, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
+            },
             RemoteDesktop::IWTSPlugin,
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
         },
@@ -39,8 +46,32 @@ lazy_static::lazy_static! {
     };
 }
 
-#[no_mangle]
+const REG_VALUE_LOG_LEVEL: PCSTR = s!("LogLevel");
+
 #[instrument]
+fn get_log_level_from_registry(parent_key: HKEY) -> Result<u32> {
+    let mut size: u32 = 0;
+    let size_ptr: *mut u32 = &mut size;
+    let mut value: u32 = 0;
+    let value_ptr: *mut u32 = &mut value;
+    let res = unsafe {
+        RegGetValueA(
+            parent_key,
+            REG_PATH,
+            REG_VALUE_LOG_LEVEL,
+            RRF_RT_REG_DWORD,
+            None,
+            Some(value_ptr as *mut c_void),
+            Some(size_ptr),
+        )
+    };
+    if res != ERROR_SUCCESS {
+        return Err(Error::from(res));
+    }
+    Ok(value)
+}
+
+#[no_mangle]
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
@@ -50,11 +81,18 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
+            let log_level = match get_log_level_from_registry(HKEY_CURRENT_USER) {
+                Ok(l) => l,
+                Err(_) => get_log_level_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
+            };
             tracing_subscriber::fmt()
                 .compact()
                 .with_writer(file_appender)
                 .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
+                .with_max_level(
+                    tracing::Level::from_str(&(log_level.to_string()))
+                        .unwrap_or(tracing::Level::WARN),
+                )
                 .init();
             trace!("DllMain: DLL_PROCESS_ATTACH");
             unsafe { DisableThreadLibraryCalls(hinst) };
