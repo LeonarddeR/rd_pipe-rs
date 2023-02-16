@@ -82,7 +82,7 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
             let log_level = match get_log_level_from_registry(HKEY_CURRENT_USER) {
-                Ok(1..=5) => l,
+                Ok(l @ 1..=5) => l,
                 _ => get_log_level_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
             };
             tracing_subscriber::fmt()
