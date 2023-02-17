@@ -17,7 +17,12 @@ pub mod rd_pipe_plugin;
 
 use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
 use rd_pipe_plugin::REG_PATH;
-use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
+use std::{
+    ffi::c_void,
+    mem::{size_of, transmute},
+    panic,
+    str::FromStr,
+};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -50,7 +55,7 @@ const REG_VALUE_LOG_LEVEL: PCSTR = s!("LogLevel");
 
 #[instrument]
 fn get_log_level_from_registry(parent_key: HKEY) -> Result<u32> {
-    let mut size: u32 = 0;
+    let mut size: u32 = size_of::<u32>() as _;
     let size_ptr: *mut u32 = &mut size;
     let mut value: u32 = 0;
     let value_ptr: *mut u32 = &mut value;
@@ -61,12 +66,17 @@ fn get_log_level_from_registry(parent_key: HKEY) -> Result<u32> {
             REG_VALUE_LOG_LEVEL,
             RRF_RT_REG_DWORD,
             None,
-            Some(value_ptr as *mut c_void),
+            Some(value_ptr as *mut _),
             Some(size_ptr),
         )
     };
     if res != ERROR_SUCCESS {
-        return Err(Error::from(res));
+        let error = Error::from(res);
+        error!(
+            "Error getting value from registry: {}; size: {}; value: {}",
+            error, size, value
+        );
+        return Err(error);
     }
     Ok(value)
 }
@@ -81,20 +91,24 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
-            let log_level = match get_log_level_from_registry(HKEY_CURRENT_USER) {
-                Ok(l @ 1..=5) => l,
-                _ => get_log_level_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
-            };
+            let log_level = tracing::Level::from_str(
+                &(match get_log_level_from_registry(HKEY_CURRENT_USER) {
+                    Ok(l @ 1..=5) => l,
+                    _ => get_log_level_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
+                }
+                .to_string()),
+            )
+            .unwrap_or(tracing::Level::WARN);
             tracing_subscriber::fmt()
                 .compact()
                 .with_writer(file_appender)
                 .with_ansi(false)
-                .with_max_level(
-                    tracing::Level::from_str(&(log_level.to_string()))
-                        .unwrap_or(tracing::Level::WARN),
-                )
+                .with_max_level(log_level)
                 .init();
-            trace!("DllMain: DLL_PROCESS_ATTACH");
+            trace!(
+                "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
+                log_level
+            );
             unsafe { DisableThreadLibraryCalls(hinst) };
             trace!("Disabled thread library calls");
         }
