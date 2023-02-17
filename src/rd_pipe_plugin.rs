@@ -45,8 +45,7 @@ use windows::{
 
 use crate::ASYNC_RUNTIME;
 
-pub const REG_PATH: PCSTR =
-    s!(r#"Software\Microsoft\Terminal Server Client\Default\AddIns\RdPipe"#);
+pub const REG_PATH: PCSTR = s!(r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#);
 const REG_VALUE_CHANNEL_NAMES: PCSTR = s!("ChannelNames");
 
 #[derive(Debug)]
