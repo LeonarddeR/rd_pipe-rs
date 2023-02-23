@@ -15,4 +15,5 @@
 [workspace]
 members = [
     "rd_pipe",
+    "reg_tool",
 ]
