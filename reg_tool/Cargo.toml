@@ -1,0 +1,29 @@
+# RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
+# cargo.toml for the rd_pipe registration tool binary crate
+# Copyright (C) 2023 Leonard de Ruijter <alderuijter@gmail.com>
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+
+[package]
+name = "rd_pipe_reg_tool"
+description = "helper tool register the rd_pipe library in the registry for Remote Desktop, Citrix and VMware Horizon support"
+version = "0.1.0"
+authors = ["Leonard de Ruijter <alderuijter@gmail.com>"]
+readme = "../readme.md"
+repository = "https://github.com/leonardder/rd_pipe-rs"
+license = "AGPL-3.0-or-later"
+categories = ["network-programming", "os::windows-apis"]
+edition = "2021"
+
+
+[dependencies]
+clap = { version = "4", features = ["derive",] }
+winreg = { version = "0.11", features = ["transactions"] }
