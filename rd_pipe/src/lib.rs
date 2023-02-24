@@ -17,31 +17,25 @@ pub mod rd_pipe_plugin;
 
 use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
 use rd_pipe_plugin::REG_PATH;
-use std::{
-    ffi::c_void,
-    mem::{size_of, transmute},
-    panic,
-    str::FromStr,
-};
+use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
+use windows::core::Interface;
 use windows::{
-    core::{Error, Interface, Result, GUID, HRESULT, PCSTR},
-    s,
+    core::{GUID, HRESULT},
     Win32::{
-        Foundation::{
-            BOOL, CLASS_E_CLASSNOTAVAILABLE, ERROR_SUCCESS, E_UNEXPECTED, HINSTANCE, S_OK,
-        },
+        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, HINSTANCE, S_OK},
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
-            Registry::{
-                RegGetValueA, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
-            },
             RemoteDesktop::IWTSPlugin,
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
         },
     },
+};
+use winreg::{
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+    RegKey, HKEY,
 };
 
 lazy_static::lazy_static! {
@@ -51,34 +45,12 @@ lazy_static::lazy_static! {
     };
 }
 
-const REG_VALUE_LOG_LEVEL: PCSTR = s!("LogLevel");
+const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
-#[instrument]
-fn get_log_level_from_registry(parent_key: HKEY) -> Result<u32> {
-    let mut size: u32 = size_of::<u32>() as _;
-    let size_ptr: *mut u32 = &mut size;
-    let mut value: u32 = 0;
-    let value_ptr: *mut u32 = &mut value;
-    let res = unsafe {
-        RegGetValueA(
-            parent_key,
-            REG_PATH,
-            REG_VALUE_LOG_LEVEL,
-            RRF_RT_REG_DWORD,
-            None,
-            Some(value_ptr as *mut _),
-            Some(size_ptr),
-        )
-    };
-    if res != ERROR_SUCCESS {
-        let error = Error::from(res);
-        error!(
-            "Error getting value from registry: {}; size: {}; value: {}",
-            error, size, value
-        );
-        return Err(error);
-    }
-    Ok(value)
+fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
+    let key = RegKey::predef(parent_key);
+    let sub_key = key.open_subkey(REG_PATH)?;
+    sub_key.get_value(REG_VALUE_LOG_LEVEL)
 }
 
 #[no_mangle]

@@ -16,7 +16,7 @@
 use core::slice;
 use itertools::Itertools;
 use parking_lot::Mutex;
-use std::ffi::c_void;
+use std::io;
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
@@ -27,26 +27,24 @@ use tokio::{
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
     core::{implement, AgileReference, Error, Result, Vtable, BSTR, PCSTR},
-    s,
     Win32::{
-        Foundation::{BOOL, ERROR_SUCCESS, E_UNEXPECTED, S_FALSE},
-        System::{
-            Registry::{
-                RegGetValueA, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ,
-            },
-            RemoteDesktop::{
-                IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
-                IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-                IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
-            },
+        Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
+        System::RemoteDesktop::{
+            IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
+            IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
+            IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
         },
     },
+};
+use winreg::{
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+    RegKey, HKEY,
 };
 
 use crate::ASYNC_RUNTIME;
 
-pub const REG_PATH: PCSTR = s!(r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#);
-const REG_VALUE_CHANNEL_NAMES: PCSTR = s!("ChannelNames");
+pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
+const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
 
 #[derive(Debug)]
 #[implement(IWTSPlugin)]
@@ -63,55 +61,25 @@ impl RdPipePlugin {
     fn create_listener(
         &self,
         channel_mgr: &IWTSVirtualChannelManager,
-        channel_name: PCSTR,
+        channel_name: String,
     ) -> Result<IWTSListener> {
-        debug!("Creating listener with name {}", unsafe {
-            channel_name.to_string().unwrap_or_default()
-        });
+        debug!("Creating listener with name {}", channel_name);
         let callback: IWTSListenerCallback =
-            RdPipeListenerCallback::new(unsafe { channel_name.to_string() }.unwrap()).into();
-        unsafe { channel_mgr.CreateListener(channel_name, 0, &callback) }
+            RdPipeListenerCallback::new(channel_name.clone()).into();
+        unsafe {
+            channel_mgr.CreateListener(
+                PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
+                0,
+                &callback,
+            )
+        }
     }
 
     #[instrument]
-    fn get_channel_names_from_registry(parent_key: HKEY) -> Result<Vec<Vec<u8>>> {
-        let mut size: u32 = 0;
-        let size_ptr: *mut u32 = &mut size;
-        let res = unsafe {
-            RegGetValueA(
-                parent_key,
-                REG_PATH,
-                REG_VALUE_CHANNEL_NAMES,
-                RRF_RT_REG_MULTI_SZ,
-                None,
-                None,
-                Some(size_ptr),
-            )
-        };
-        if res != ERROR_SUCCESS {
-            return Err(Error::from(res));
-        }
-        let mut value: Vec<u8> = vec![0; size as _];
-        let res = unsafe {
-            RegGetValueA(
-                parent_key,
-                REG_PATH,
-                REG_VALUE_CHANNEL_NAMES,
-                RRF_RT_REG_MULTI_SZ,
-                None,
-                Some(value.as_mut_ptr() as *mut c_void),
-                Some(size_ptr),
-            )
-        };
-        if res != ERROR_SUCCESS {
-            return Err(Error::from(res));
-        }
-        let v: Vec<Vec<u8>> = value
-            .split_inclusive(|c| *c == 0)
-            .filter(|s| s[0] != 0)
-            .map(|s| s.to_owned())
-            .collect();
-        Ok(v)
+    fn get_channel_names_from_registry(parent_key: HKEY) -> io::Result<Vec<String>> {
+        let key = RegKey::predef(parent_key);
+        let sub_key = key.open_subkey(REG_PATH)?;
+        sub_key.get_value(REG_VALUE_CHANNEL_NAMES)
     }
 }
 
@@ -125,7 +93,7 @@ impl IWTSPlugin_Impl for RdPipePlugin {
                 return Err(Error::from(E_UNEXPECTED));
             }
         };
-        let mut channels: Vec<Vec<u8>> = Vec::new();
+        let mut channels: Vec<String> = Vec::new();
         channels.extend(
             RdPipePlugin::get_channel_names_from_registry(HKEY_CURRENT_USER).unwrap_or_default(),
         );
@@ -136,8 +104,8 @@ impl IWTSPlugin_Impl for RdPipePlugin {
             error!("No channels in registry");
             return Err(Error::from(E_UNEXPECTED));
         }
-        for channel_name in channels.iter().unique() {
-            self.create_listener(channel_mgr, PCSTR::from_raw(channel_name.as_ptr()))?;
+        for channel_name in channels.into_iter().unique() {
+            self.create_listener(channel_mgr, channel_name)?;
         }
         Ok(())
     }
