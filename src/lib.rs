@@ -49,10 +49,8 @@ const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
 fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
     let key = RegKey::predef(parent_key);
-    match key.open_subkey(REG_PATH) {
-        Ok(k) => return k.get_value(REG_VALUE_LOG_LEVEL),
-        Err(e) => return Err(e),
-    };
+    let sub_key = key.open_subkey(REG_PATH)?;
+    sub_key.get_value(REG_VALUE_LOG_LEVEL)
 }
 
 #[no_mangle]

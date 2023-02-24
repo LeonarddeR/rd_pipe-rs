@@ -66,16 +66,20 @@ impl RdPipePlugin {
         debug!("Creating listener with name {}", channel_name);
         let callback: IWTSListenerCallback =
             RdPipeListenerCallback::new(channel_name.clone()).into();
-        unsafe { channel_mgr.CreateListener(PCSTR::from_raw(format!("{}0", channel_name).as_ptr()), 0, &callback) }
+        unsafe {
+            channel_mgr.CreateListener(
+                PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
+                0,
+                &callback,
+            )
+        }
     }
 
     #[instrument]
     fn get_channel_names_from_registry(parent_key: HKEY) -> io::Result<Vec<String>> {
         let key = RegKey::predef(parent_key);
-        match key.open_subkey(REG_PATH) {
-            Ok(k) => k.get_value(REG_VALUE_CHANNEL_NAMES),
-            Err(e) => Err(e),
-        }
+        let sub_key = key.open_subkey(REG_PATH)?;
+        sub_key.get_value(REG_VALUE_CHANNEL_NAMES)
     }
 }
 
