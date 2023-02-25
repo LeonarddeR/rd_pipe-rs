@@ -14,13 +14,25 @@
 
 pub mod class_factory;
 pub mod rd_pipe_plugin;
+pub mod registry;
 
-use crate::{class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin};
+use crate::{
+    class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,
+};
+use clap::Parser;
 use rd_pipe_plugin::REG_PATH;
+use registry::{
+    ctx_add_to_registry, ctx_delete_from_registry, delete_from_registry,
+    inproc_server_add_to_registry, msts_add_to_registry, Cli, Scope, COM_CLS_FOLDER,
+    TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME,
+};
 use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
-use windows::core::Interface;
+use windows::{
+    core::{Interface, PCWSTR},
+    Win32::{Foundation::S_FALSE, System::LibraryLoader::GetModuleFileNameW},
+};
 use windows::{
     core::{GUID, HRESULT},
     Win32::{
@@ -53,10 +65,18 @@ fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
     sub_key.get_value(REG_VALUE_LOG_LEVEL)
 }
 
+static mut DLL_PATH: Option<String> = None;
+
 #[no_mangle]
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
+            let mut file_name: Vec<u16> = Vec::with_capacity(256);
+            if unsafe { GetModuleFileNameW(hinst, file_name.as_mut_slice()) } > 0 {
+                unsafe {
+                    DLL_PATH = Some(String::from_utf16_lossy(&file_name));
+                }
+            }
             panic::set_hook(Box::new(|info| {
                 error!("{:?}", info);
             }));
@@ -91,8 +111,6 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
     }
     BOOL::from(true)
 }
-
-pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 
 #[no_mangle]
 #[instrument]
@@ -157,6 +175,67 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
         let plugin: IWTSPlugin = RdPipePlugin::new().into();
         debug!("Setting result pointer to plugin");
         *ppo = unsafe { transmute(plugin) };
+    }
+    S_OK
+}
+
+#[no_mangle]
+#[instrument]
+pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESULT {
+    if cmd_line.is_null() {
+        return S_FALSE;
+    }
+    let arguments: String = unsafe { PCWSTR::from_raw(cmd_line).to_string() }.unwrap();
+    let cli = Cli::try_parse_from(arguments.split(" ")).unwrap();
+    let scope_hkey = match cli.scope {
+        Scope::CurrentUser => HKEY_CURRENT_USER,
+        Scope::LocalMachine => HKEY_LOCAL_MACHINE,
+    };
+    match install {
+        true => {
+            if cli.com_server {
+                if let Err(_) = inproc_server_add_to_registry(scope_hkey, unsafe {
+                    DLL_PATH.as_deref().unwrap()
+                }) {
+                    return S_FALSE;
+                }
+            }
+            if cli.rdp {
+                if let Err(_) = msts_add_to_registry(scope_hkey) {
+                    return S_FALSE;
+                }
+            }
+            if cli.citrix {
+                if let Err(_) = ctx_add_to_registry(scope_hkey) {
+                    return S_FALSE;
+                }
+            }
+        }
+        false => {
+            if cli.com_server {
+                if let Err(_) = delete_from_registry(
+                    scope_hkey,
+                    COM_CLS_FOLDER,
+                    &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
+                ) {
+                    return S_FALSE;
+                }
+            }
+            if cli.rdp {
+                if let Err(_) = delete_from_registry(
+                    scope_hkey,
+                    TS_ADD_INS_FOLDER,
+                    TS_ADD_IN_RD_PIPE_FOLDER_NAME,
+                ) {
+                    return S_FALSE;
+                }
+            }
+            if cli.citrix {
+                if let Err(_) = ctx_delete_from_registry(scope_hkey) {
+                    return S_FALSE;
+                }
+            }
+        }
     }
     S_OK
 }
