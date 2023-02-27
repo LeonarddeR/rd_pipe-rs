@@ -31,7 +31,10 @@ use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{Interface, PCWSTR},
-    Win32::{Foundation::S_FALSE, System::LibraryLoader::GetModuleFileNameW},
+    Win32::{
+        Foundation::{ERROR_INVALID_PARAMETER, WIN32_ERROR},
+        System::LibraryLoader::GetModuleFileNameW,
+    },
 };
 use windows::{
     core::{GUID, HRESULT},
@@ -71,15 +74,6 @@ static mut DLL_PATH: Option<String> = None;
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
-            let mut file_name: Vec<u16> = Vec::with_capacity(256);
-            if unsafe { GetModuleFileNameW(hinst, file_name.as_mut_slice()) } > 0 {
-                unsafe {
-                    DLL_PATH = Some(String::from_utf16_lossy(&file_name));
-                }
-            }
-            panic::set_hook(Box::new(|info| {
-                error!("{:?}", info);
-            }));
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
@@ -97,8 +91,27 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
                 .with_ansi(false)
                 .with_max_level(log_level)
                 .init();
+            panic::set_hook(Box::new(|info| {
+                error!("{:?}", info);
+            }));
+            let mut file_name = [0u16; 256];
+            let path_string: String;
+            match unsafe { GetModuleFileNameW(hinst, file_name.as_mut()) } > 0 {
+                true => unsafe {
+                    path_string = String::from_utf16_lossy(&file_name);
+                    DLL_PATH = Some(path_string.clone());
+                },
+                false => {
+                    error!(
+                        "Error calling GetModuleFileNameW: {}",
+                        windows::core::Error::from_win32()
+                    );
+                    return false.into();
+                }
+            }
             trace!(
-                "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
+                "DllMain: DLL_PROCESS_ATTACH, loaded from {}, logging at level {}",
+                path_string,
                 log_level
             );
             unsafe { DisableThreadLibraryCalls(hinst) };
@@ -109,7 +122,7 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
         }
         _ => {}
     }
-    BOOL::from(true)
+    true.into()
 }
 
 #[no_mangle]
@@ -183,10 +196,23 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
 #[instrument]
 pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESULT {
     if cmd_line.is_null() {
-        return S_FALSE;
+        error!("No command line provided");
+        return ERROR_INVALID_PARAMETER.into();
     }
-    let arguments: String = unsafe { PCWSTR::from_raw(cmd_line).to_string() }.unwrap();
-    let cli = Cli::try_parse_from(arguments.split(" ")).unwrap();
+    let arguments: String = match unsafe { PCWSTR::from_raw(cmd_line).to_string() } {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Couldn't convert arguments from PCWSTR: {}", e);
+            return ERROR_INVALID_PARAMETER.into();
+        }
+    };
+    let cli = match Cli::try_parse_from(arguments.split(" ")) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Couldn't parse arguments: {}", e);
+            return ERROR_INVALID_PARAMETER.into();
+        }
+    };
     let scope_hkey = match cli.scope {
         Scope::CurrentUser => HKEY_CURRENT_USER,
         Scope::LocalMachine => HKEY_LOCAL_MACHINE,
@@ -194,45 +220,45 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESU
     match install {
         true => {
             if cli.com_server {
-                if let Err(_) = inproc_server_add_to_registry(scope_hkey, unsafe {
+                if let Err(e) = inproc_server_add_to_registry(scope_hkey, unsafe {
                     DLL_PATH.as_deref().unwrap()
                 }) {
-                    return S_FALSE;
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
             if cli.rdp {
-                if let Err(_) = msts_add_to_registry(scope_hkey) {
-                    return S_FALSE;
+                if let Err(e) = msts_add_to_registry(scope_hkey) {
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
             if cli.citrix {
-                if let Err(_) = ctx_add_to_registry(scope_hkey) {
-                    return S_FALSE;
+                if let Err(e) = ctx_add_to_registry(scope_hkey) {
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
         }
         false => {
             if cli.com_server {
-                if let Err(_) = delete_from_registry(
+                if let Err(e) = delete_from_registry(
                     scope_hkey,
                     COM_CLS_FOLDER,
                     &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
                 ) {
-                    return S_FALSE;
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
             if cli.rdp {
-                if let Err(_) = delete_from_registry(
+                if let Err(e) = delete_from_registry(
                     scope_hkey,
                     TS_ADD_INS_FOLDER,
                     TS_ADD_IN_RD_PIPE_FOLDER_NAME,
                 ) {
-                    return S_FALSE;
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
             if cli.citrix {
-                if let Err(_) = ctx_delete_from_registry(scope_hkey) {
-                    return S_FALSE;
+                if let Err(e) = ctx_delete_from_registry(scope_hkey) {
+                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
         }
