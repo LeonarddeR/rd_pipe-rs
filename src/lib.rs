@@ -19,12 +19,11 @@ pub mod registry;
 use crate::{
     class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,
 };
-use clap::Parser;
 use rd_pipe_plugin::REG_PATH;
 use registry::{
     ctx_add_to_registry, ctx_delete_from_registry, delete_from_registry,
-    inproc_server_add_to_registry, msts_add_to_registry, Cli, Scope, COM_CLS_FOLDER,
-    TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME,
+    inproc_server_add_to_registry, msts_add_to_registry, COM_CLS_FOLDER, TS_ADD_INS_FOLDER,
+    TS_ADD_IN_RD_PIPE_FOLDER_NAME,
 };
 use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
@@ -32,7 +31,7 @@ use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{Interface, PCWSTR},
     Win32::{
-        Foundation::{ERROR_INVALID_PARAMETER, WIN32_ERROR},
+        Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, WIN32_ERROR},
         System::LibraryLoader::GetModuleFileNameW,
     },
 };
@@ -68,7 +67,7 @@ fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
     sub_key.get_value(REG_VALUE_LOG_LEVEL)
 }
 
-static mut DLL_PATH: Option<String> = None;
+static mut INSTANCE: Option<HINSTANCE> = None;
 
 #[no_mangle]
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
@@ -94,24 +93,8 @@ pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c
             panic::set_hook(Box::new(|info| {
                 error!("{:?}", info);
             }));
-            let mut file_name = [0u16; 256];
-            let path_string: String;
-            match unsafe { GetModuleFileNameW(hinst, file_name.as_mut()) } > 0 {
-                true => unsafe {
-                    path_string = String::from_utf16_lossy(&file_name);
-                    DLL_PATH = Some(path_string.clone());
-                },
-                false => {
-                    error!(
-                        "Error calling GetModuleFileNameW: {}",
-                        windows::core::Error::from_win32()
-                    );
-                    return false.into();
-                }
-            }
             trace!(
-                "DllMain: DLL_PROCESS_ATTACH, loaded from {}, logging at level {}",
-                path_string,
+                "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
                 log_level
             );
             unsafe { DisableThreadLibraryCalls(hinst) };
@@ -192,53 +175,77 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
     S_OK
 }
 
+const CMD_COM_SERVER: char = 'c'; // Registers/unregisters the COM server
+const CMD_MSTS: char = 'r'; // Registers/unregisters RDP/MSTS support
+const CMD_CITRIX: char = 'x'; // Registers/unregisters Citrix support
+const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_USER
+
 #[no_mangle]
 #[instrument]
-pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESULT {
+pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
+    debug!("DllInstall called");
     if cmd_line.is_null() {
         error!("No command line provided");
         return ERROR_INVALID_PARAMETER.into();
     }
-    let arguments: String = match unsafe { PCWSTR::from_raw(cmd_line).to_string() } {
-        Ok(s) => s,
+    let arguments: String = match unsafe { cmd_line.to_string() } {
+        Ok(s) => {
+            debug!("Command line contains: {}", &s);
+            s.to_lowercase()
+        }
         Err(e) => {
             error!("Couldn't convert arguments from PCWSTR: {}", e);
             return ERROR_INVALID_PARAMETER.into();
         }
     };
-    let cli = match Cli::try_parse_from(arguments.split(" ")) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Couldn't parse arguments: {}", e);
-            return ERROR_INVALID_PARAMETER.into();
-        }
-    };
-    let scope_hkey = match cli.scope {
-        Scope::CurrentUser => HKEY_CURRENT_USER,
-        Scope::LocalMachine => HKEY_LOCAL_MACHINE,
+    if arguments.is_empty() {
+        error!("No arguments provided");
+        return ERROR_INVALID_PARAMETER.into();
+    }
+    let scope_hkey = match arguments.contains(CMD_LOCAL_MACHINE) {
+        true => HKEY_LOCAL_MACHINE,
+        false => HKEY_CURRENT_USER,
     };
     match install {
         true => {
-            if cli.com_server {
-                if let Err(e) = inproc_server_add_to_registry(scope_hkey, unsafe {
-                    DLL_PATH.as_deref().unwrap()
-                }) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+            if arguments.contains(CMD_COM_SERVER) {
+                match unsafe { INSTANCE } {
+                    Some(h) => {
+                        let mut file_name = [0u16; 256];
+                        let path_string: String;
+                        match unsafe { GetModuleFileNameW(h, file_name.as_mut()) } > 0 {
+                            true => {
+                                path_string = String::from_utf16_lossy(&file_name);
+                            }
+                            false => {
+                                let e = windows::core::Error::from_win32();
+                                error!("Error calling GetModuleFileNameW: {}", e);
+                                return e.into();
+                            }
+                        }
+                        if let Err(e) = inproc_server_add_to_registry(scope_hkey, &path_string) {
+                            return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                        }
+                    }
+                    None => {
+                        error!("No hinstance to calculate dll path");
+                        return ERROR_INVALID_FUNCTION.into();
+                    }
                 }
             }
-            if cli.rdp {
+            if arguments.contains(CMD_MSTS) {
                 if let Err(e) = msts_add_to_registry(scope_hkey) {
                     return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
-            if cli.citrix {
+            if arguments.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_add_to_registry(scope_hkey) {
                     return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
         }
         false => {
-            if cli.com_server {
+            if arguments.contains(CMD_COM_SERVER) {
                 if let Err(e) = delete_from_registry(
                     scope_hkey,
                     COM_CLS_FOLDER,
@@ -247,7 +254,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESU
                     return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
-            if cli.rdp {
+            if arguments.contains(CMD_MSTS) {
                 if let Err(e) = delete_from_registry(
                     scope_hkey,
                     TS_ADD_INS_FOLDER,
@@ -256,7 +263,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: *const u16) -> HRESU
                     return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }
             }
-            if cli.citrix {
+            if arguments.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_delete_from_registry(scope_hkey) {
                     return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                 }

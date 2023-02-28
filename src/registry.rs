@@ -12,8 +12,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use clap::Parser;
-use clap::{arg, ValueEnum};
 use std::io;
 use windows::core::GUID;
 use winreg::{
@@ -128,24 +126,4 @@ pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
         flags,
     )?;
     t.commit()
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum Scope {
-    CurrentUser,
-    LocalMachine,
-}
-
-#[derive(Parser, Debug)]
-#[command(author, version)]
-pub struct Cli {
-    #[arg(short)]
-    pub com_server: bool,
-    #[arg(short)]
-    pub rdp: bool,
-    #[arg(short = 'x')]
-    pub citrix: bool,
-    #[arg(short, default_value_t = Scope::CurrentUser)]
-    #[arg(value_enum)]
-    pub scope: Scope,
 }

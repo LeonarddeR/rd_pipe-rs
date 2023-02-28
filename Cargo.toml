@@ -34,7 +34,6 @@ tracing-appender = "0.2.2"
 tracing-subscriber = "0.3.16"
 itertools = "0.10.5"
 winreg = { version = "0.11", features = ["transactions"] }
-clap = { version = "4", default-features = false, features = ["derive", "std"] }
 
 [dependencies.windows]
 version = "0.44.0"
