@@ -39,7 +39,8 @@ const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
 #[instrument]
 pub fn inproc_server_add_to_registry(
     parent_key: HKEY,
-    path: &str,
+    clsid_key: &str,
+    dll_path: &str,
     channel_names: &[&str],
 ) -> io::Result<()> {
     debug!("inproc_server_add_to_registry called");
@@ -47,7 +48,7 @@ pub fn inproc_server_add_to_registry(
     trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
-    let key_path = format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN);
+    let key_path = format!(r"{}\{{{:?}}}", clsid_key, CLSID_RD_PIPE_PLUGIN);
     trace!("Creating {}", &key_path);
     let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
     trace!("Setting default value");
@@ -56,7 +57,7 @@ pub fn inproc_server_add_to_registry(
     let (key, _disp) =
         key.create_subkey_transacted_with_flags(COM_IMPROC_SERVER_FOLDER_NAME, &t, flags)?;
     trace!("Setting default value");
-    let path_value = path.to_reg_value();
+    let path_value = dll_path.to_reg_value();
     key.set_raw_value("", &path_value)?;
     trace!("Setting threading model value");
     key.set_value("ThreadingModel", &"Free")?;

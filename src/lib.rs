@@ -232,9 +232,12 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                                 return e.into();
                             }
                         }
-                        if let Err(e) =
-                            inproc_server_add_to_registry(scope_hkey, &path_string, &arguments[1..])
-                        {
+                        if let Err(e) = inproc_server_add_to_registry(
+                            scope_hkey,
+                            &COM_CLS_FOLDER,
+                            &path_string,
+                            &arguments[1..],
+                        ) {
                             let e: windows::core::Error =
                                 WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                             error!("Error calling inproc_server_add_to_registry: {}", e);
