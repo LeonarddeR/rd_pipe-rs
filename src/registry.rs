@@ -13,9 +13,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::io;
+use tracing::{debug, instrument, trace};
 use windows::core::GUID;
+use winreg::enums::KEY_ALL_ACCESS;
 use winreg::{
-    enums::{RegType::REG_EXPAND_SZ, KEY_ALL_ACCESS, KEY_READ, KEY_WRITE},
+    enums::{KEY_READ, KEY_WRITE},
     transaction::Transaction,
     types::ToRegValue,
     RegKey, HKEY,
@@ -34,96 +36,132 @@ const CTX_MODULES_FOLDER: &str =
     r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
 const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
 
-pub fn inproc_server_add_to_registry(parent_key: HKEY, path: &str) -> io::Result<()> {
+#[instrument]
+pub fn inproc_server_add_to_registry(
+    parent_key: HKEY,
+    path: &str,
+    channel_names: &[&str],
+) -> io::Result<()> {
+    debug!("inproc_server_add_to_registry called");
     let flags = KEY_WRITE;
+    trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
-    let (key, _disp) = hk.create_subkey_transacted_with_flags(
-        format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN),
-        &t,
-        flags,
-    )?;
+    let key_path = format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN);
+    trace!("Creating {}", &key_path);
+    let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
+    trace!("Setting default value");
     key.set_value("", &RD_PIPE_PLUGIN_NAME)?;
+    trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
     let (key, _disp) =
         key.create_subkey_transacted_with_flags(COM_IMPROC_SERVER_FOLDER_NAME, &t, flags)?;
-    let mut path_value = path.to_reg_value();
-    if path.to_lowercase().contains("appdata%") {
-        path_value.vtype = REG_EXPAND_SZ;
-    }
+    trace!("Setting default value");
+    let path_value = path.to_reg_value();
     key.set_raw_value("", &path_value)?;
+    trace!("Setting threading model value");
     key.set_value("ThreadingModel", &"Free")?;
+    trace!("Committing transaction");
     t.commit()
 }
 
+#[instrument]
 pub fn delete_from_registry(parent_key: HKEY, reg_path: &str, sub_key: &str) -> io::Result<()> {
+    debug!("delete_from_registry called");
     let flags = KEY_ALL_ACCESS;
     let hk = RegKey::predef(parent_key);
+    trace!("Opening {}", &reg_path);
     let key = hk.open_subkey_with_flags(reg_path, flags)?;
+    trace!("Deleting {}\\{}", &reg_path, &sub_key);
     key.delete_subkey_all(sub_key)
 }
 
+#[instrument]
 pub fn msts_add_to_registry(parent_key: HKEY) -> io::Result<()> {
+    debug!("msts_add_to_registry");
     let flags = KEY_WRITE;
+    trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
-    let (key, _disp) = hk.create_subkey_transacted_with_flags(
-        format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME),
-        &t,
-        flags,
-    )?;
+    let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
+    trace!("Creating {}", &key_path);
+    let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
+    trace!("Setting value {}", TS_ADD_IN_NAME_VALUE_NAME);
     key.set_value(
         TS_ADD_IN_NAME_VALUE_NAME,
         &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
     )?;
+    trace!("Setting value {}", TS_ADD_IN_VIEW_ENABLED_VALUE_NAME);
     key.set_value(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, &1u32)?;
+    trace!("Committing transaction");
     t.commit()
 }
 
+#[instrument]
 pub fn ctx_add_to_registry(parent_key: HKEY) -> io::Result<()> {
+    debug!("ctx_add_to_registry called");
     let flags = KEY_READ;
+    trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
-    let (modules_key, _disp) =
-        hk.create_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
-    let (key, _disp) = modules_key.create_subkey_transacted_with_flags(
-        format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME),
-        &t,
-        flags,
-    )?;
+    trace!("Opening {}", CTX_MODULES_FOLDER);
+    let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+    trace!("Creating {}", &key_name);
+    let (key, _disp) = modules_key.create_subkey_transacted_with_flags(key_name, &t, flags)?;
+    trace!("Setting value DvcNames");
     key.set_value("DvcNames", &RD_PIPE_PLUGIN_NAME)?;
+    trace!("Setting value PluginClassId");
     key.set_value("PluginClassId", &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
+    trace!("Opening DVCAdapter key");
     let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
     let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if !plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
+        debug!("Adding {} to {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
         plugins_list.push(&RD_PIPE_PLUGIN_NAME);
+        trace!(
+            "Setting value {}",
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
+        );
         key.set_value(
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
             &plugins_list.join(","),
         )?;
     }
+    trace!("Committing transaction");
     t.commit()
 }
 
+#[instrument]
 pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
+    debug!("ctx_delete_from_registry called");
     let flags = KEY_READ;
+    trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
+    trace!("Opening {}", CTX_MODULES_FOLDER);
     let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    trace!("Opening DVCAdapter key");
     let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
     let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
+        debug!("removing {} from {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
         plugins_list.retain(|s| s != &RD_PIPE_PLUGIN_NAME);
+        trace!(
+            "Setting value {}",
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
+        );
         key.set_value(
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
             &plugins_list.join(","),
         )?;
     }
-    modules_key.delete_subkey_transacted_with_flags(
-        format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME),
-        &t,
-        flags,
-    )?;
+    let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+    trace!("Deleting {}", &key_name);
+    modules_key.delete_subkey_transacted_with_flags(key_name, &t, flags)?;
+    trace!("Committing transaction");
     t.commit()
 }

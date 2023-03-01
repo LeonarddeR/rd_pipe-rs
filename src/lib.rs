@@ -73,6 +73,9 @@ static mut INSTANCE: Option<HINSTANCE> = None;
 pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
+            unsafe {
+                INSTANCE = Some(hinst);
+            }
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
@@ -123,17 +126,17 @@ pub extern "stdcall" fn DllGetClassObject(
     *ppv = std::ptr::null_mut();
 
     if clsid != CLSID_RD_PIPE_PLUGIN {
-        debug!("DllGetClassObject called for unknown class: {:?}", clsid);
+        error!("DllGetClassObject called for unknown class: {:?}", clsid);
         return CLASS_E_CLASSNOTAVAILABLE;
     }
     if iid != IClassFactory::IID {
-        debug!("DllGetClassObject called for unknown interface: {:?}", iid);
+        error!("DllGetClassObject called for unknown interface: {:?}", iid);
         return E_UNEXPECTED;
     }
-    debug!("Constructing class factory");
+    trace!("Constructing class factory");
     let factory = ClassFactory;
     let factory: IClassFactory = factory.into();
-    debug!("Setting result pointer to class factory");
+    trace!("Setting result pointer to class factory");
     *ppv = unsafe { transmute(factory) };
 
     S_OK
@@ -149,14 +152,14 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
     debug!("VirtualChannelGetInstance called");
     let riid = unsafe { *riid };
     if riid != IWTSPlugin::IID {
-        debug!(
+        error!(
             "VirtualChannelGetInstance called for unknown interface: {:?}",
             riid
         );
         return E_UNEXPECTED;
     }
     let pnumobjs = unsafe { &mut *pnumobjs };
-    debug!("Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)");
+    trace!("Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)");
     if ppo.is_null() {
         debug!("Result pointer is null, client is querying for number of objects. Setting pnumobjs to 1, since we only support one plugin");
         *pnumobjs = 1;
@@ -167,9 +170,9 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
             return E_UNEXPECTED;
         }
         let ppo = unsafe { &mut *ppo };
-        debug!("Constructing the plugin");
+        trace!("Constructing the plugin");
         let plugin: IWTSPlugin = RdPipePlugin::new().into();
-        debug!("Setting result pointer to plugin");
+        trace!("Setting result pointer to plugin");
         *ppo = unsafe { transmute(plugin) };
     }
     S_OK
@@ -190,8 +193,8 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     }
     let arguments: String = match unsafe { cmd_line.to_string() } {
         Ok(s) => {
-            debug!("Command line contains: {}", &s);
-            s.to_lowercase()
+            trace!("Command line has: {}", &s);
+            s
         }
         Err(e) => {
             error!("Couldn't convert arguments from PCWSTR: {}", e);
@@ -202,13 +205,19 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
         error!("No arguments provided");
         return ERROR_INVALID_PARAMETER.into();
     }
-    let scope_hkey = match arguments.contains(CMD_LOCAL_MACHINE) {
+    let arguments: Vec<&str> = arguments.split(" ").collect();
+    let commands = arguments[0].to_lowercase();
+    let scope_hkey = match commands.contains(CMD_LOCAL_MACHINE) {
         true => HKEY_LOCAL_MACHINE,
         false => HKEY_CURRENT_USER,
     };
     match install {
         true => {
-            if arguments.contains(CMD_COM_SERVER) {
+            if commands.contains(CMD_COM_SERVER) {
+                if arguments.len() == 1 {
+                    error!("No channel names provided");
+                    return ERROR_INVALID_PARAMETER.into();
+                }
                 match unsafe { INSTANCE } {
                     Some(h) => {
                         let mut file_name = [0u16; 256];
@@ -223,8 +232,13 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                                 return e.into();
                             }
                         }
-                        if let Err(e) = inproc_server_add_to_registry(scope_hkey, &path_string) {
-                            return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                        if let Err(e) =
+                            inproc_server_add_to_registry(scope_hkey, &path_string, &arguments[1..])
+                        {
+                            let e: windows::core::Error =
+                                WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                            error!("Error calling inproc_server_add_to_registry: {}", e);
+                            return e.into();
                         }
                     }
                     None => {
@@ -233,39 +247,54 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     }
                 }
             }
-            if arguments.contains(CMD_MSTS) {
+            if commands.contains(CMD_MSTS) {
                 if let Err(e) = msts_add_to_registry(scope_hkey) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling msts_add_to_registry: {}", e);
+                    return e.into();
                 }
             }
-            if arguments.contains(CMD_CITRIX) {
+            if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_add_to_registry(scope_hkey) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling ctx_add_to_registry: {}", e);
+                    return e.into();
                 }
             }
         }
         false => {
-            if arguments.contains(CMD_COM_SERVER) {
+            if commands.contains(CMD_COM_SERVER) {
                 if let Err(e) = delete_from_registry(
                     scope_hkey,
                     COM_CLS_FOLDER,
                     &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
                 ) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling delete_from_registry: {}", e);
+                    return e.into();
                 }
             }
-            if arguments.contains(CMD_MSTS) {
+            if commands.contains(CMD_MSTS) {
                 if let Err(e) = delete_from_registry(
                     scope_hkey,
                     TS_ADD_INS_FOLDER,
                     TS_ADD_IN_RD_PIPE_FOLDER_NAME,
                 ) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling delete_from_registry: {}", e);
+                    return e.into();
                 }
             }
-            if arguments.contains(CMD_CITRIX) {
+            if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_delete_from_registry(scope_hkey) {
-                    return WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling ctx_delete_from_registry: {}", e);
+                    return e.into();
                 }
             }
         }
