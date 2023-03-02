@@ -16,12 +16,7 @@ use std::io;
 use tracing::{debug, instrument, trace};
 use windows::core::GUID;
 use winreg::enums::KEY_ALL_ACCESS;
-use winreg::{
-    enums::{KEY_READ, KEY_WRITE},
-    transaction::Transaction,
-    types::ToRegValue,
-    RegKey, HKEY,
-};
+use winreg::{enums::KEY_WRITE, transaction::Transaction, types::ToRegValue, RegKey, HKEY};
 
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 const RD_PIPE_PLUGIN_NAME: &str = "RdPipe";
@@ -32,8 +27,10 @@ pub const TS_ADD_INS_FOLDER: &str = r"Software\Microsoft\Terminal Server Client\
 pub const TS_ADD_IN_RD_PIPE_FOLDER_NAME: &str = RD_PIPE_PLUGIN_NAME;
 const TS_ADD_IN_NAME_VALUE_NAME: &str = "Name";
 const TS_ADD_IN_VIEW_ENABLED_VALUE_NAME: &str = "View Enabled";
+#[cfg(target_arch = "x86")]
 const CTX_MODULES_FOLDER: &str =
     r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
+#[cfg(target_arch = "x86")]
 const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
 
 #[instrument]
@@ -100,6 +97,7 @@ pub fn msts_add_to_registry(parent_key: HKEY) -> io::Result<()> {
     t.commit()
 }
 
+#[cfg(target_arch = "x86")]
 #[instrument]
 pub fn ctx_add_to_registry(parent_key: HKEY) -> io::Result<()> {
     debug!("ctx_add_to_registry called");
@@ -137,15 +135,15 @@ pub fn ctx_add_to_registry(parent_key: HKEY) -> io::Result<()> {
     t.commit()
 }
 
+#[cfg(target_arch = "x86")]
 #[instrument]
 pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
     debug!("ctx_delete_from_registry called");
-    let flags = KEY_READ;
     trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
     trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    let modules_key = hk.open_subkey_transacted(CTX_MODULES_FOLDER, &t)?;
     trace!("Opening DVCAdapter key");
     let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
     let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;

@@ -20,10 +20,11 @@ use crate::{
     class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,
 };
 use rd_pipe_plugin::REG_PATH;
+#[cfg(target_arch = "x86")]
+use registry::{ctx_add_to_registry, ctx_delete_from_registry};
 use registry::{
-    ctx_add_to_registry, ctx_delete_from_registry, delete_from_registry,
-    inproc_server_add_to_registry, msts_add_to_registry, COM_CLS_FOLDER, TS_ADD_INS_FOLDER,
-    TS_ADD_IN_RD_PIPE_FOLDER_NAME,
+    delete_from_registry, inproc_server_add_to_registry, msts_add_to_registry, COM_CLS_FOLDER,
+    TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME,
 };
 use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
@@ -207,6 +208,11 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     }
     let arguments: Vec<&str> = arguments.split(" ").collect();
     let commands = arguments[0].to_lowercase();
+    #[cfg(not(target_arch = "x86"))]
+    if commands.contains(CMD_CITRIX) {
+        error!("Citrix registration not supported for non-X86 builds");
+        return ERROR_INVALID_PARAMETER.into();
+    }
     let scope_hkey = match commands.contains(CMD_LOCAL_MACHINE) {
         true => HKEY_LOCAL_MACHINE,
         false => HKEY_CURRENT_USER,
@@ -258,6 +264,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return e.into();
                 }
             }
+            #[cfg(target_arch = "x86")]
             if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_add_to_registry(scope_hkey) {
                     let e: windows::core::Error =
@@ -292,6 +299,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return e.into();
                 }
             }
+            #[cfg(target_arch = "x86")]
             if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_delete_from_registry(scope_hkey) {
                     let e: windows::core::Error =
