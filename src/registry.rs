@@ -53,6 +53,9 @@ pub fn inproc_server_add_to_registry(
     let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
     trace!("Setting default value");
     key.set_value("", &RD_PIPE_PLUGIN_NAME)?;
+    trace!("Setting {}", _COM_CLS_CHANNEL_NAMES_VALUE_NAME);
+    let channel_names: Vec<&str> = channel_names.into();
+    key.set_value(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
     let (key, _disp) =
         key.create_subkey_transacted_with_flags(COM_IMPROC_SERVER_FOLDER_NAME, &t, flags)?;
