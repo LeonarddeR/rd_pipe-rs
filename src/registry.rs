@@ -101,21 +101,20 @@ pub fn msts_add_to_registry(parent_key: HKEY) -> io::Result<()> {
 #[instrument]
 pub fn ctx_add_to_registry(parent_key: HKEY) -> io::Result<()> {
     debug!("ctx_add_to_registry called");
-    let flags = KEY_READ;
     trace!("Creating transaction");
     let t = Transaction::new()?;
     let hk = RegKey::predef(parent_key);
     trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    let modules_key = hk.open_subkey_transacted(CTX_MODULES_FOLDER, &t)?;
     let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
     trace!("Creating {}", &key_name);
-    let (key, _disp) = modules_key.create_subkey_transacted_with_flags(key_name, &t, flags)?;
+    let (key, _disp) = modules_key.create_subkey_transacted(key_name, &t)?;
     trace!("Setting value DvcNames");
     key.set_value("DvcNames", &RD_PIPE_PLUGIN_NAME)?;
     trace!("Setting value PluginClassId");
     key.set_value("PluginClassId", &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
+    let key = modules_key.open_subkey_transacted("DVCAdapter", &t)?;
     let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
@@ -145,7 +144,7 @@ pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
     trace!("Opening {}", CTX_MODULES_FOLDER);
     let modules_key = hk.open_subkey_transacted(CTX_MODULES_FOLDER, &t)?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
+    let key = modules_key.open_subkey_transacted("DVCAdapter", &t)?;
     let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
@@ -163,7 +162,7 @@ pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
     }
     let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
     trace!("Deleting {}", &key_name);
-    modules_key.delete_subkey_transacted_with_flags(key_name, &t, flags)?;
+    modules_key.delete_subkey_transacted(key_name, &t)?;
     trace!("Committing transaction");
     t.commit()
 }
