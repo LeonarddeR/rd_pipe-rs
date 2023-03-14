@@ -15,14 +15,14 @@
 use std::mem::transmute;
 use tracing::{debug, instrument, trace};
 use windows::{
-    core::{implement, IUnknown, Result, GUID},
+    core::{implement, IUnknown, Result, GUID, ComInterface},
     Win32::{
         Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
         System::Com::{IClassFactory, IClassFactory_Impl},
     },
 };
 use windows::{
-    core::{Error, Interface},
+    core::{Error},
     Win32::System::RemoteDesktop::IWTSPlugin,
 };
 
@@ -36,7 +36,7 @@ impl IClassFactory_Impl for ClassFactory {
     #[instrument]
     fn CreateInstance(
         &self,
-        outer: &Option<IUnknown>,
+        outer: Option<&IUnknown>,
         iid: *const GUID,
         object: *mut *mut core::ffi::c_void,
     ) -> Result<()> {
