@@ -30,7 +30,7 @@ use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
-    core::{Interface, PCWSTR},
+    core::{ComInterface, PCWSTR},
     Win32::{
         Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, WIN32_ERROR},
         System::LibraryLoader::GetModuleFileNameW,

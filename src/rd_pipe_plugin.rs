@@ -26,7 +26,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
-    core::{implement, AgileReference, Error, Result, Vtable, BSTR, PCSTR},
+    core::{implement, AgileReference, Error, Interface, Result, BSTR, PCSTR},
     Win32::{
         Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
         System::RemoteDesktop::{
@@ -85,7 +85,7 @@ impl RdPipePlugin {
 
 impl IWTSPlugin_Impl for RdPipePlugin {
     #[instrument]
-    fn Initialize(&self, pchannelmgr: &Option<IWTSVirtualChannelManager>) -> Result<()> {
+    fn Initialize(&self, pchannelmgr: Option<&IWTSVirtualChannelManager>) -> Result<()> {
         let channel_mgr = match pchannelmgr {
             Some(m) => m,
             None => {
@@ -146,7 +146,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
     #[instrument]
     fn OnNewChannelConnection(
         &self,
-        pchannel: &Option<IWTSVirtualChannel>,
+        pchannel: Option<&IWTSVirtualChannel>,
         data: &BSTR,
         pbaccept: *mut BOOL,
         ppcallback: *mut Option<IWTSVirtualChannelCallback>,
@@ -156,7 +156,7 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
             pchannel, &self.name
         );
         let channel = match pchannel {
-            Some(c) => c.to_owned(),
+            Some(c) => c,
             None => return Err(Error::from(E_UNEXPECTED)),
         };
         let pbaccept = unsafe { &mut *pbaccept };
@@ -185,14 +185,14 @@ pub struct RdPipeChannelCallback {
 
 impl RdPipeChannelCallback {
     #[instrument]
-    pub fn new(channel: IWTSVirtualChannel, channel_name: &str) -> Self {
+    pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Self {
         let addr = format!(
             "{}_{}_{}",
             PIPE_NAME_PREFIX,
             channel_name,
             channel.as_raw() as usize
         );
-        let channel_agile = AgileReference::new(&channel).unwrap();
+        let channel_agile = AgileReference::new(channel).unwrap();
         let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
         let callback = Self {

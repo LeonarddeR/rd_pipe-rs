@@ -14,16 +14,13 @@
 
 use std::mem::transmute;
 use tracing::{debug, instrument, trace};
+use windows::{core::Error, Win32::System::RemoteDesktop::IWTSPlugin};
 use windows::{
-    core::{implement, IUnknown, Result, GUID},
+    core::{implement, ComInterface, IUnknown, Result, GUID},
     Win32::{
         Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
         System::Com::{IClassFactory, IClassFactory_Impl},
     },
-};
-use windows::{
-    core::{Error, Interface},
-    Win32::System::RemoteDesktop::IWTSPlugin,
 };
 
 use crate::rd_pipe_plugin::RdPipePlugin;
@@ -36,7 +33,7 @@ impl IClassFactory_Impl for ClassFactory {
     #[instrument]
     fn CreateInstance(
         &self,
-        outer: &Option<IUnknown>,
+        outer: Option<&IUnknown>,
         iid: *const GUID,
         object: *mut *mut core::ffi::c_void,
     ) -> Result<()> {
