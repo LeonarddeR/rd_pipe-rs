@@ -28,7 +28,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
     core::{implement, AgileReference, Error, Interface, Result, BSTR, PCSTR},
     Win32::{
-        Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
+        Foundation::{BOOL, ERROR_PIPE_NOT_CONNECTED, E_UNEXPECTED},
         System::RemoteDesktop::{
             IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
             IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
@@ -318,7 +318,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
             }
             None => {
                 debug!("Data received without an open named pipe");
-                Err(Error::from(S_FALSE))
+                Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
             }
         }
     }
