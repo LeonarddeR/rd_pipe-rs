@@ -26,7 +26,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::{
-    core::{implement, AgileReference, Error, Result, BSTR, PCSTR, Interface},
+    core::{implement, AgileReference, Error, Interface, Result, BSTR, PCSTR},
     Win32::{
         Foundation::{BOOL, E_UNEXPECTED, S_FALSE},
         System::RemoteDesktop::{

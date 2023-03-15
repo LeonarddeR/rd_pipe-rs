@@ -14,16 +14,13 @@
 
 use std::mem::transmute;
 use tracing::{debug, instrument, trace};
+use windows::{core::Error, Win32::System::RemoteDesktop::IWTSPlugin};
 use windows::{
-    core::{implement, IUnknown, Result, GUID, ComInterface},
+    core::{implement, ComInterface, IUnknown, Result, GUID},
     Win32::{
         Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
         System::Com::{IClassFactory, IClassFactory_Impl},
     },
-};
-use windows::{
-    core::{Error},
-    Win32::System::RemoteDesktop::IWTSPlugin,
 };
 
 use crate::rd_pipe_plugin::RdPipePlugin;
