@@ -32,14 +32,14 @@ use tracing::{debug, error, instrument, trace};
 use windows::{
     core::{ComInterface, PCWSTR},
     Win32::{
-        Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, WIN32_ERROR},
+        Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, HMODULE, WIN32_ERROR},
         System::LibraryLoader::GetModuleFileNameW,
     },
 };
 use windows::{
     core::{GUID, HRESULT},
     Win32::{
-        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, HINSTANCE, S_OK},
+        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, S_OK},
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
@@ -68,10 +68,10 @@ fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
     sub_key.get_value(REG_VALUE_LOG_LEVEL)
 }
 
-static mut INSTANCE: Option<HINSTANCE> = None;
+static mut INSTANCE: Option<HMODULE> = None;
 
 #[no_mangle]
-pub extern "stdcall" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
+pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
             unsafe {
