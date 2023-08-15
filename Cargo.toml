@@ -36,7 +36,7 @@ itertools = "0.11.0"
 winreg = { version = "0.50", features = ["transactions"] }
 
 [dependencies.windows]
-version = "0.48.0"
+version = "0.51.0"
 features = [
     "implement",
     "Win32_Foundation",
