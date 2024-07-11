@@ -101,7 +101,7 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
                 "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
                 log_level
             );
-            unsafe { DisableThreadLibraryCalls(hinst) };
+            unsafe { DisableThreadLibraryCalls(hinst) }.unwrap();
             trace!("Disabled thread library calls");
         }
         DLL_PROCESS_DETACH => {

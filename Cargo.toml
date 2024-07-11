@@ -1,6 +1,6 @@
 # RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 # cargo.toml for the rd_pipe crate
-# Copyright (C) 2022-2023 Leonard de Ruijter <alderuijter@gmail.com>
+# Copyright (C) 2022-2024 Leonard de Ruijter <alderuijter@gmail.com>
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
 # published by the Free Software Foundation, either version 3 of the
@@ -15,7 +15,7 @@
 [package]
 name = "rd_pipe"
 description = "Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Leonard de Ruijter <alderuijter@gmail.com>"]
 readme = "../readme.md"
 repository = "https://github.com/leonardder/rd_pipe-rs"
@@ -27,12 +27,12 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-lazy_static = "1.4"
-parking_lot = "0.12.1"
-tracing = "0.1.37"
-tracing-appender = "0.2.2"
-tracing-subscriber = "0.3.16"
-itertools = "0.12.0"
+lazy_static = "1.5"
+parking_lot = "0.12.3"
+tracing = "0.1.40"
+tracing-appender = "0.2.3"
+tracing-subscriber = "0.3.18"
+itertools = "0.13.0"
 winreg = { version = "0.52", features = ["transactions"] }
 
 [dependencies.windows]
@@ -50,7 +50,7 @@ features = [
 ]
 
 [dependencies.tokio]
-version = "1.23.0"
+version = "1.38.0"
 features = [
     "rt-multi-thread",
     "net",
