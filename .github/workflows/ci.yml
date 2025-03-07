@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -35,7 +35,7 @@ jobs:
             suffix: arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -45,9 +45,10 @@ jobs:
       - name: Build target
         run: cargo build --release --target ${{ matrix.target }}
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rd_pipe-${{ matrix.suffix }}
+          compression-level: 9
           path: |
             ./target/${{ matrix.target }}/release/*.dll*
             ./target/${{ matrix.target }}/release/*.pdb
