@@ -29,11 +29,11 @@ crate-type = ["cdylib"]
 [dependencies]
 lazy_static = "1.5"
 parking_lot = "0.12.3"
-tracing = "0.1.40"
+tracing = "0.1.41"
 tracing-appender = "0.2.3"
-tracing-subscriber = "0.3.18"
-itertools = "0.13.0"
-winreg = { version = "0.52", features = ["transactions"] }
+tracing-subscriber = "0.3.19"
+itertools = "0.14.0"
+winreg = { version = "0.55", features = ["transactions"] }
 
 [dependencies.windows]
 version = "0.54.0"
@@ -50,7 +50,7 @@ features = [
 ]
 
 [dependencies.tokio]
-version = "1.38.0"
+version = "1.43.0"
 features = [
     "rt-multi-thread",
     "net",
