@@ -12,11 +12,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::io;
 use tracing::{debug, instrument, trace};
 use windows::core::GUID;
-use winreg::enums::KEY_ALL_ACCESS;
-use winreg::{HKEY, RegKey, enums::KEY_WRITE, transaction::Transaction, types::ToRegValue};
+use windows_registry::{Key, Transaction};
 
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 const RD_PIPE_PLUGIN_NAME: &str = "RdPipe";
@@ -35,64 +33,75 @@ const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
 
 #[instrument]
 pub fn inproc_server_add_to_registry(
-    parent_key: HKEY,
+    parent_key: &Key,
     clsid_key: &str,
     dll_path: &str,
     channel_names: &[&str],
-) -> io::Result<()> {
+) -> windows_core::Result<()> {
     debug!("inproc_server_add_to_registry called");
-    let flags = KEY_WRITE;
     trace!("Creating transaction");
     let t = Transaction::new()?;
-    let hk = RegKey::predef(parent_key);
     let key_path = format!(r"{}\{{{:?}}}", clsid_key, CLSID_RD_PIPE_PLUGIN);
     trace!("Creating {}", &key_path);
-    let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
+    let key = parent_key
+        .options()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(&key_path)?;
     trace!("Setting default value");
-    key.set_value("", &RD_PIPE_PLUGIN_NAME)?;
+    key.set_string("", RD_PIPE_PLUGIN_NAME)?;
     trace!("Setting {}", _COM_CLS_CHANNEL_NAMES_VALUE_NAME);
     let channel_names: Vec<&str> = channel_names.into();
-    key.set_value(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
+    key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
-    let (key, _disp) =
-        key.create_subkey_transacted_with_flags(COM_IMPROC_SERVER_FOLDER_NAME, &t, flags)?;
+    let key = key
+        .options()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(COM_IMPROC_SERVER_FOLDER_NAME)?;
     trace!("Setting default value");
-    let path_value = dll_path.to_reg_value();
-    key.set_raw_value("", &path_value)?;
+    key.set_string("", dll_path)?;
     trace!("Setting threading model value");
-    key.set_value("ThreadingModel", &"Free")?;
+    key.set_string("ThreadingModel", "Free")?;
     trace!("Committing transaction");
     t.commit()
 }
 
 #[instrument]
-pub fn delete_from_registry(parent_key: HKEY, reg_path: &str, sub_key: &str) -> io::Result<()> {
+pub fn delete_from_registry(
+    parent_key: &Key,
+    reg_path: &str,
+    sub_key: &str,
+) -> windows_core::Result<()> {
     debug!("delete_from_registry called");
-    let flags = KEY_ALL_ACCESS;
-    let hk = RegKey::predef(parent_key);
     trace!("Opening {}", &reg_path);
-    let key = hk.open_subkey_with_flags(reg_path, flags)?;
+    let key = parent_key.open(reg_path)?;
     trace!("Deleting {}\\{}", &reg_path, &sub_key);
-    key.delete_subkey_all(sub_key)
+    key.remove_tree(sub_key)
 }
 
 #[instrument]
-pub fn msts_add_to_registry(parent_key: HKEY) -> io::Result<()> {
+pub fn msts_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
     debug!("msts_add_to_registry");
-    let flags = KEY_WRITE;
     trace!("Creating transaction");
     let t = Transaction::new()?;
-    let hk = RegKey::predef(parent_key);
     let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
     trace!("Creating {}", &key_path);
-    let (key, _disp) = hk.create_subkey_transacted_with_flags(&key_path, &t, flags)?;
+    let key = parent_key
+        .options()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(&key_path)?;
     trace!("Setting value {}", TS_ADD_IN_NAME_VALUE_NAME);
-    key.set_value(
+    key.set_string(
         TS_ADD_IN_NAME_VALUE_NAME,
-        &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
+        format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
     )?;
     trace!("Setting value {}", TS_ADD_IN_VIEW_ENABLED_VALUE_NAME);
-    key.set_value(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, &1u32)?;
+    key.set_u32(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, 1)?;
     trace!("Committing transaction");
     t.commit()
 }
