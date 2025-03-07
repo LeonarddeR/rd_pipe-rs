@@ -239,7 +239,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                 }
                 if let Err(e) = inproc_server_add_to_registry(
                     scope_hkey,
-                    &COM_CLS_FOLDER,
+                    COM_CLS_FOLDER,
                     &path_string,
                     &arguments[1..],
                 ) {

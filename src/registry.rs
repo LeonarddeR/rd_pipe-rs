@@ -98,7 +98,7 @@ pub fn msts_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
     trace!("Setting value {}", TS_ADD_IN_NAME_VALUE_NAME);
     key.set_string(
         TS_ADD_IN_NAME_VALUE_NAME,
-        &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
+        format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
     )?;
     trace!("Setting value {}", TS_ADD_IN_VIEW_ENABLED_VALUE_NAME);
     key.set_u32(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, 1)?;

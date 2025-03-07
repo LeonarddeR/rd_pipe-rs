@@ -107,7 +107,7 @@ impl IWTSPlugin_Impl for RdPipePlugin_Impl {
         channels.extend(
             RdPipePlugin::get_channel_names_from_registry(LOCAL_MACHINE).unwrap_or_default(),
         );
-        if channels.len() == 0 {
+        if channels.is_empty() {
             error!("No channels in registry");
             return Err(Error::from(E_UNEXPECTED));
         }
@@ -145,7 +145,7 @@ pub struct RdPipeListenerCallback {
 impl RdPipeListenerCallback {
     #[instrument]
     pub fn new(name: String) -> Self {
-        Self { name: name }
+        Self { name }
     }
 }
 
@@ -206,11 +206,11 @@ impl RdPipeChannelCallback {
         let channel_agile = AgileReference::new(channel).unwrap();
         let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
-        let callback = Self {
+
+        Self {
             pipe_writer: pipe_writer.clone(),
             join_handle: Self::process_pipe(pipe_writer.clone(), channel_agile, addr),
-        };
-        callback
+        }
     }
 
     #[instrument]
