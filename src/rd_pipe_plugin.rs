@@ -16,7 +16,7 @@
 use core::slice;
 use itertools::Itertools;
 use parking_lot::Mutex;
-use std::{fmt, io};
+use std::fmt;
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
@@ -38,10 +38,7 @@ use windows::{
     core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
 };
 use windows_core::{BOOL, OutRef};
-use winreg::{
-    HKEY, RegKey,
-    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
-};
+use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
 use crate::ASYNC_RUNTIME;
 
@@ -78,10 +75,9 @@ impl RdPipePlugin {
     }
 
     #[instrument]
-    fn get_channel_names_from_registry(parent_key: HKEY) -> io::Result<Vec<String>> {
-        let key = RegKey::predef(parent_key);
-        let sub_key = key.open_subkey(REG_PATH)?;
-        sub_key.get_value(REG_VALUE_CHANNEL_NAMES)
+    fn get_channel_names_from_registry(parent_key: &Key) -> windows_core::Result<Vec<String>> {
+        let sub_key = parent_key.open(REG_PATH)?;
+        sub_key.get_multi_string(REG_VALUE_CHANNEL_NAMES)
     }
 }
 
@@ -106,10 +102,10 @@ impl IWTSPlugin_Impl for RdPipePlugin_Impl {
         };
         let mut channels: Vec<String> = Vec::new();
         channels.extend(
-            RdPipePlugin::get_channel_names_from_registry(HKEY_CURRENT_USER).unwrap_or_default(),
+            RdPipePlugin::get_channel_names_from_registry(CURRENT_USER).unwrap_or_default(),
         );
         channels.extend(
-            RdPipePlugin::get_channel_names_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
+            RdPipePlugin::get_channel_names_from_registry(LOCAL_MACHINE).unwrap_or_default(),
         );
         if channels.len() == 0 {
             error!("No channels in registry");

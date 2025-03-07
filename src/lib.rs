@@ -26,7 +26,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
+use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -43,16 +43,13 @@ use windows::{
 };
 use windows::{
     Win32::{
-        Foundation::{ERROR_INVALID_PARAMETER, HMODULE, WIN32_ERROR},
+        Foundation::{ERROR_INVALID_PARAMETER, HMODULE},
         System::LibraryLoader::GetModuleFileNameW,
     },
     core::{Interface, PCWSTR},
 };
 use windows_core::BOOL;
-use winreg::{
-    HKEY, RegKey,
-    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
-};
+use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 lazy_static::lazy_static! {
     static ref ASYNC_RUNTIME: Runtime = {
@@ -63,10 +60,9 @@ lazy_static::lazy_static! {
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
-fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
-    let key = RegKey::predef(parent_key);
-    let sub_key = key.open_subkey(REG_PATH)?;
-    sub_key.get_value(REG_VALUE_LOG_LEVEL)
+fn get_log_level_from_registry(parent_key: &windows_registry::Key) -> windows_core::Result<u32> {
+    let sub_key = parent_key.open(REG_PATH)?;
+    sub_key.get_u32(REG_VALUE_LOG_LEVEL)
 }
 
 static mut INSTANCE: Option<HMODULE> = None;
@@ -82,9 +78,9 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
             let log_level = tracing::Level::from_str(
-                &(match get_log_level_from_registry(HKEY_CURRENT_USER) {
+                &(match get_log_level_from_registry(CURRENT_USER) {
                     Ok(l @ 1..=5) => l,
-                    _ => get_log_level_from_registry(HKEY_LOCAL_MACHINE).unwrap_or_default(),
+                    _ => get_log_level_from_registry(LOCAL_MACHINE).unwrap_or_default(),
                 }
                 .to_string()),
             )
@@ -219,8 +215,8 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
         return ERROR_INVALID_PARAMETER.into();
     }
     let scope_hkey = match commands.contains(CMD_LOCAL_MACHINE) {
-        true => HKEY_LOCAL_MACHINE,
-        false => HKEY_CURRENT_USER,
+        true => LOCAL_MACHINE,
+        false => CURRENT_USER,
     };
     match install {
         true => {
@@ -247,16 +243,12 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     &path_string,
                     &arguments[1..],
                 ) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling inproc_server_add_to_registry: {}", e);
                     return e.into();
                 }
             }
             if commands.contains(CMD_MSTS) {
                 if let Err(e) = msts_add_to_registry(scope_hkey) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling msts_add_to_registry: {}", e);
                     return e.into();
                 }
@@ -287,8 +279,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     TS_ADD_INS_FOLDER,
                     TS_ADD_IN_RD_PIPE_FOLDER_NAME,
                 ) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling delete_from_registry: {}", e);
                     return e.into();
                 }
@@ -299,8 +289,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     COM_CLS_FOLDER,
                     &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
                 ) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling delete_from_registry: {}", e);
                     return e.into();
                 }
