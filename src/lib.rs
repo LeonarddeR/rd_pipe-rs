@@ -256,8 +256,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
             #[cfg(target_arch = "x86")]
             if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_add_to_registry(scope_hkey) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling ctx_add_to_registry: {}", e);
                     return e.into();
                 }
@@ -267,8 +265,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
             #[cfg(target_arch = "x86")]
             if commands.contains(CMD_CITRIX) {
                 if let Err(e) = ctx_delete_from_registry(scope_hkey) {
-                    let e: windows::core::Error =
-                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
                     error!("Error calling ctx_delete_from_registry: {}", e);
                     return e.into();
                 }
