@@ -229,32 +229,28 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     error!("No channel names provided");
                     return ERROR_INVALID_PARAMETER.into();
                 }
-                match unsafe { INSTANCE } {
-                    h => {
-                        let mut file_name = [0u16; 256];
-                        let path_string: String;
-                        match unsafe { GetModuleFileNameW(h, file_name.as_mut()) } > 0 {
-                            true => {
-                                path_string = String::from_utf16_lossy(&file_name);
-                            }
-                            false => {
-                                let e = windows::core::Error::from_win32();
-                                error!("Error calling GetModuleFileNameW: {}", e);
-                                return e.into();
-                            }
-                        }
-                        if let Err(e) = inproc_server_add_to_registry(
-                            scope_hkey,
-                            &COM_CLS_FOLDER,
-                            &path_string,
-                            &arguments[1..],
-                        ) {
-                            let e: windows::core::Error =
-                                WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
-                            error!("Error calling inproc_server_add_to_registry: {}", e);
-                            return e.into();
-                        }
+                let mut file_name = [0u16; 256];
+                let path_string: String;
+                match unsafe { GetModuleFileNameW(INSTANCE, file_name.as_mut()) } > 0 {
+                    true => {
+                        path_string = String::from_utf16_lossy(&file_name);
                     }
+                    false => {
+                        let e = windows::core::Error::from_win32();
+                        error!("Error calling GetModuleFileNameW: {}", e);
+                        return e.into();
+                    }
+                }
+                if let Err(e) = inproc_server_add_to_registry(
+                    scope_hkey,
+                    &COM_CLS_FOLDER,
+                    &path_string,
+                    &arguments[1..],
+                ) {
+                    let e: windows::core::Error =
+                        WIN32_ERROR(e.raw_os_error().unwrap() as u32).into();
+                    error!("Error calling inproc_server_add_to_registry: {}", e);
+                    return e.into();
                 }
             }
             if commands.contains(CMD_MSTS) {
