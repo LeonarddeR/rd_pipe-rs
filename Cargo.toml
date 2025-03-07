@@ -21,7 +21,7 @@ readme = "../readme.md"
 repository = "https://github.com/leonardder/rd_pipe-rs"
 license = "AGPL-3.0-or-later"
 categories = ["network-programming", "os::windows-apis"]
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
@@ -34,11 +34,11 @@ tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.19"
 itertools = "0.14.0"
 winreg = { version = "0.55", features = ["transactions"] }
+windows-core = "0.60.1"
 
 [dependencies.windows]
-version = "0.54.0"
+version = "0.60.0"
 features = [
-    "implement",
     "Win32_Foundation",
     "Win32_System_SystemServices",
     "Win32_System_LibraryLoader",

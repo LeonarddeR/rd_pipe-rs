@@ -16,29 +16,31 @@
 use core::slice;
 use itertools::Itertools;
 use parking_lot::Mutex;
-use std::io;
+use std::{fmt, io};
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
-    io::{split, AsyncReadExt, AsyncWriteExt, WriteHalf},
+    io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
     task::JoinHandle,
-    time::{sleep, Duration},
+    time::{Duration, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
+use windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
 use windows::{
-    core::{implement, AgileReference, Error, Interface, Result, BSTR, PCSTR},
     Win32::{
-        Foundation::{BOOL, ERROR_PIPE_NOT_CONNECTED, E_UNEXPECTED},
+        Foundation::E_UNEXPECTED,
         System::RemoteDesktop::{
             IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
             IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
             IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
         },
     },
+    core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
 };
+use windows_core::{BOOL, OutRef};
 use winreg::{
+    HKEY, RegKey,
     enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
-    RegKey, HKEY,
 };
 
 use crate::ASYNC_RUNTIME;
@@ -83,10 +85,19 @@ impl RdPipePlugin {
     }
 }
 
-impl IWTSPlugin_Impl for RdPipePlugin {
-    #[instrument]
-    fn Initialize(&self, pchannelmgr: Option<&IWTSVirtualChannelManager>) -> Result<()> {
-        let channel_mgr = match pchannelmgr {
+impl fmt::Debug for RdPipePlugin_Impl {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("RdPipePlugin_Impl").finish()
+    }
+}
+
+impl IWTSPlugin_Impl for RdPipePlugin_Impl {
+    #[instrument(skip(pchannelmgr))]
+    fn Initialize(
+        &self,
+        pchannelmgr: windows_core::Ref<'_, IWTSVirtualChannelManager>,
+    ) -> Result<()> {
+        let channel_mgr = match pchannelmgr.as_ref() {
             Some(m) => m,
             None => {
                 error!("No pchannelmgr given when initializing");
@@ -142,31 +153,35 @@ impl RdPipeListenerCallback {
     }
 }
 
-impl IWTSListenerCallback_Impl for RdPipeListenerCallback {
-    #[instrument]
+impl fmt::Debug for RdPipeListenerCallback_Impl {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("RdPipeListenerCallback_Impl")
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
+    #[instrument(skip(pchannel, ppcallback))]
     fn OnNewChannelConnection(
         &self,
-        pchannel: Option<&IWTSVirtualChannel>,
+        pchannel: windows_core::Ref<'_, IWTSVirtualChannel>,
         data: &BSTR,
         pbaccept: *mut BOOL,
-        ppcallback: *mut Option<IWTSVirtualChannelCallback>,
+        ppcallback: OutRef<'_, IWTSVirtualChannelCallback>,
     ) -> Result<()> {
-        debug!(
-            "Creating new callback for channel {:?} with name {}",
-            pchannel, &self.name
-        );
-        let channel = match pchannel {
+        debug!("Creating new callback for channel with name {}", &self.name);
+        let channel = match pchannel.as_ref() {
             Some(c) => c,
             None => return Err(Error::from(E_UNEXPECTED)),
         };
         let pbaccept = unsafe { &mut *pbaccept };
-        let ppcallback = unsafe { &mut *ppcallback };
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
             RdPipeChannelCallback::new(channel, &self.name).into();
         trace!("Callback {:?} created", callback);
-        *ppcallback = Some(callback);
+        ppcallback.write(callback.into()).unwrap();
         Ok(())
     }
 }
@@ -296,14 +311,14 @@ impl RdPipeChannelCallback {
     }
 }
 
-impl Drop for RdPipeChannelCallback {
-    #[instrument]
-    fn drop(&mut self) {
-        self.OnClose().unwrap_or_default();
+impl fmt::Debug for RdPipeChannelCallback_Impl {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("RdPipeChannelCallback_Impl")
+            .field("pipe_writer", &self.pipe_writer)
+            .finish()
     }
 }
-
-impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback {
+impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);
