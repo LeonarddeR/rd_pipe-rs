@@ -25,10 +25,8 @@ pub const TS_ADD_INS_FOLDER: &str = r"Software\Microsoft\Terminal Server Client\
 pub const TS_ADD_IN_RD_PIPE_FOLDER_NAME: &str = RD_PIPE_PLUGIN_NAME;
 const TS_ADD_IN_NAME_VALUE_NAME: &str = "Name";
 const TS_ADD_IN_VIEW_ENABLED_VALUE_NAME: &str = "View Enabled";
-#[cfg(target_arch = "x86")]
 const CTX_MODULES_FOLDER: &str =
     r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
-#[cfg(target_arch = "x86")]
 const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
 
 #[instrument]
@@ -55,12 +53,7 @@ pub fn inproc_server_add_to_registry(
     let channel_names: Vec<&str> = channel_names.into();
     key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
-    let key = key
-        .options()
-        .write()
-        .create()
-        .transaction(&t)
-        .open(COM_IMPROC_SERVER_FOLDER_NAME)?;
+    let key = key.open(COM_IMPROC_SERVER_FOLDER_NAME)?;
     trace!("Setting default value");
     key.set_string("", dll_path)?;
     trace!("Setting threading model value");
@@ -106,60 +99,62 @@ pub fn msts_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
     t.commit()
 }
 
-#[cfg(target_arch = "x86")]
 #[instrument]
-pub fn ctx_add_to_registry(parent_key: HKEY) -> io::Result<()> {
-    use winreg::enums::KEY_READ;
+pub fn ctx_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
     debug!("ctx_add_to_registry called");
-    let flags = KEY_READ | KEY_WRITE;
     trace!("Creating transaction");
     let t = Transaction::new()?;
-    let hk = RegKey::predef(parent_key);
     trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    let modules_key = parent_key
+        .options()
+        .read()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(CTX_MODULES_FOLDER)?;
     let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
     trace!("Creating {}", &key_name);
-    let (key, _disp) = modules_key.create_subkey_transacted_with_flags(key_name, &t, flags)?;
+    let key = modules_key.open(key_name)?;
     trace!("Setting value DvcNames");
-    key.set_value("DvcNames", &RD_PIPE_PLUGIN_NAME)?;
+    key.set_string("DvcNames", RD_PIPE_PLUGIN_NAME)?;
     trace!("Setting value PluginClassId");
-    key.set_value("PluginClassId", &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
+    key.set_string("PluginClassId", format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
-    let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    let key = modules_key.open("DVCAdapter")?;
+    let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if !plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
         debug!("Adding {} to {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
-        plugins_list.push(&RD_PIPE_PLUGIN_NAME);
+        plugins_list.push(RD_PIPE_PLUGIN_NAME);
         trace!(
             "Setting value {}",
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
         );
-        key.set_value(
+        key.set_string(
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
-            &plugins_list.join(","),
+            plugins_list.join(","),
         )?;
     }
     trace!("Committing transaction");
     t.commit()
 }
 
-#[cfg(target_arch = "x86")]
 #[instrument]
-pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
-    use winreg::enums::KEY_READ;
-
+pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
     debug!("ctx_delete_from_registry called");
     trace!("Creating transaction");
     let t = Transaction::new()?;
-    let flags = KEY_READ | KEY_WRITE;
-    let hk = RegKey::predef(parent_key);
     trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = hk.open_subkey_transacted_with_flags(CTX_MODULES_FOLDER, &t, flags)?;
+    let modules_key = parent_key
+        .options()
+        .read()
+        .write()
+        .transaction(&t)
+        .open(CTX_MODULES_FOLDER)?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open_subkey_transacted_with_flags("DVCAdapter", &t, flags)?;
-    let plugins: String = key.get_value(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    let key = modules_key.open("DVCAdapter")?;
+    let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
@@ -169,14 +164,14 @@ pub fn ctx_delete_from_registry(parent_key: HKEY) -> io::Result<()> {
             "Setting value {}",
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
         );
-        key.set_value(
+        key.set_string(
             CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
-            &plugins_list.join(","),
+            plugins_list.join(","),
         )?;
     }
     let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
     trace!("Deleting {}", &key_name);
-    modules_key.delete_subkey_transacted_with_flags(key_name, &t, flags)?;
+    modules_key.remove_tree(key_name)?;
     trace!("Committing transaction");
     t.commit()
 }
