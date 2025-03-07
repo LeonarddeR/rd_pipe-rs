@@ -188,6 +188,7 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 #[unsafe(no_mangle)]
 #[instrument]
 pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
+    let path_string: String;
     debug!("DllInstall called");
     if cmd_line.is_null() {
         error!("No command line provided");
@@ -226,7 +227,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return ERROR_INVALID_PARAMETER.into();
                 }
                 let mut file_name = [0u16; 256];
-                let path_string: String;
                 match unsafe { GetModuleFileNameW(INSTANCE, file_name.as_mut()) } > 0 {
                     true => {
                         path_string = String::from_utf16_lossy(&file_name);

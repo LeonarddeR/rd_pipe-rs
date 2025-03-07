@@ -53,7 +53,12 @@ pub fn inproc_server_add_to_registry(
     let channel_names: Vec<&str> = channel_names.into();
     key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
-    let key = key.open(COM_IMPROC_SERVER_FOLDER_NAME)?;
+    let key = key
+        .options()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(COM_IMPROC_SERVER_FOLDER_NAME)?;
     trace!("Setting default value");
     key.set_string("", dll_path)?;
     trace!("Setting threading model value");
@@ -70,7 +75,7 @@ pub fn delete_from_registry(
 ) -> windows_core::Result<()> {
     debug!("delete_from_registry called");
     trace!("Opening {}", &reg_path);
-    let key = parent_key.open(reg_path)?;
+    let key = parent_key.options().read().write().open(reg_path)?;
     trace!("Deleting {}\\{}", &reg_path, &sub_key);
     key.remove_tree(sub_key)
 }
@@ -108,19 +113,28 @@ pub fn ctx_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
     let modules_key = parent_key
         .options()
         .read()
-        .write()
-        .create()
         .transaction(&t)
         .open(CTX_MODULES_FOLDER)?;
     let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
     trace!("Creating {}", &key_name);
-    let key = modules_key.open(key_name)?;
+    let key = modules_key
+        .options()
+        .read()
+        .write()
+        .create()
+        .transaction(&t)
+        .open(key_name)?;
     trace!("Setting value DvcNames");
     key.set_string("DvcNames", RD_PIPE_PLUGIN_NAME)?;
     trace!("Setting value PluginClassId");
     key.set_string("PluginClassId", format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open("DVCAdapter")?;
+    let key = modules_key
+        .options()
+        .read()
+        .write()
+        .transaction(&t)
+        .open("DVCAdapter")?;
     let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
@@ -153,7 +167,12 @@ pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
         .transaction(&t)
         .open(CTX_MODULES_FOLDER)?;
     trace!("Opening DVCAdapter key");
-    let key = modules_key.open("DVCAdapter")?;
+    let key = modules_key
+        .options()
+        .read()
+        .write()
+        .transaction(&t)
+        .open("DVCAdapter")?;
     let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
