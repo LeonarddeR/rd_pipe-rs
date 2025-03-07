@@ -12,19 +12,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::mem::transmute;
+use std::{fmt, mem::transmute};
 use tracing::{debug, instrument, trace};
 use windows::{
-    core::{implement, IUnknown, Result, GUID},
     Win32::{
-        Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOINTERFACE},
-        System::Com::{IClassFactory, IClassFactory_Impl},
+        Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+        System::{
+            Com::{IClassFactory, IClassFactory_Impl},
+            RemoteDesktop::IWTSPlugin,
+        },
     },
+    core::{Error, GUID, IUnknown, Interface, Result, implement},
 };
-use windows::{
-    core::{Error, Interface},
-    Win32::System::RemoteDesktop::IWTSPlugin,
-};
+use windows_core::BOOL;
 
 use crate::rd_pipe_plugin::RdPipePlugin;
 
@@ -32,11 +32,17 @@ use crate::rd_pipe_plugin::RdPipePlugin;
 #[derive(Debug)]
 pub struct ClassFactory;
 
-impl IClassFactory_Impl for ClassFactory {
-    #[instrument]
+impl fmt::Debug for ClassFactory_Impl {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ClassFactory_Impl").finish()
+    }
+}
+
+impl IClassFactory_Impl for ClassFactory_Impl {
+    #[instrument(skip(outer))]
     fn CreateInstance(
         &self,
-        outer: Option<&IUnknown>,
+        outer: windows_core::Ref<'_, IUnknown>,
         iid: *const GUID,
         object: *mut *mut core::ffi::c_void,
     ) -> Result<()> {

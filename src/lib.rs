@@ -20,26 +20,18 @@ use crate::{
     class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,
 };
 use rd_pipe_plugin::REG_PATH;
+use registry::{
+    COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
+    inproc_server_add_to_registry, msts_add_to_registry,
+};
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use registry::{
-    delete_from_registry, inproc_server_add_to_registry, msts_add_to_registry, COM_CLS_FOLDER,
-    TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME,
-};
 use std::{ffi::c_void, io, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
-    core::{Interface, PCWSTR},
     Win32::{
-        Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, HMODULE, WIN32_ERROR},
-        System::LibraryLoader::GetModuleFileNameW,
-    },
-};
-use windows::{
-    core::{GUID, HRESULT},
-    Win32::{
-        Foundation::{BOOL, CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, S_OK},
+        Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, S_OK},
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
@@ -47,10 +39,19 @@ use windows::{
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
         },
     },
+    core::{GUID, HRESULT},
 };
+use windows::{
+    Win32::{
+        Foundation::{ERROR_INVALID_PARAMETER, HMODULE, WIN32_ERROR},
+        System::LibraryLoader::GetModuleFileNameW,
+    },
+    core::{Interface, PCWSTR},
+};
+use windows_core::BOOL;
 use winreg::{
+    HKEY, RegKey,
     enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
-    RegKey, HKEY,
 };
 
 lazy_static::lazy_static! {
@@ -70,7 +71,7 @@ fn get_log_level_from_registry(parent_key: HKEY) -> io::Result<u32> {
 
 static mut INSTANCE: Option<HMODULE> = None;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
@@ -112,7 +113,7 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
     true.into()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[instrument]
 pub extern "stdcall" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -143,7 +144,7 @@ pub extern "stdcall" fn DllGetClassObject(
     S_OK
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[instrument]
 pub extern "stdcall" fn VirtualChannelGetInstance(
     riid: *const GUID,
@@ -160,9 +161,13 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
         return E_UNEXPECTED;
     }
     let pnumobjs = unsafe { &mut *pnumobjs };
-    trace!("Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)");
+    trace!(
+        "Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)"
+    );
     if ppo.is_null() {
-        debug!("Result pointer is null, client is querying for number of objects. Setting pnumobjs to 1, since we only support one plugin");
+        debug!(
+            "Result pointer is null, client is querying for number of objects. Setting pnumobjs to 1, since we only support one plugin"
+        );
         *pnumobjs = 1;
     } else {
         debug!("{} plugins requested", *pnumobjs);
@@ -172,9 +177,9 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
         }
         let ppo = unsafe { &mut *ppo };
         trace!("Constructing the plugin");
-        let plugin: IWTSPlugin = RdPipePlugin::new().into();
+        let plugin = RdPipePlugin::new();
         trace!("Setting result pointer to plugin");
-        *ppo = unsafe { transmute(plugin) };
+        *ppo = unsafe { transmute(&plugin) };
     }
     S_OK
 }
@@ -184,7 +189,7 @@ const CMD_MSTS: char = 'r'; // Registers/unregisters RDP/MSTS support
 const CMD_CITRIX: char = 'x'; // Registers/unregisters Citrix support
 const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_USER
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[instrument]
 pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     debug!("DllInstall called");
@@ -225,7 +230,7 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return ERROR_INVALID_PARAMETER.into();
                 }
                 match unsafe { INSTANCE } {
-                    Some(h) => {
+                    h => {
                         let mut file_name = [0u16; 256];
                         let path_string: String;
                         match unsafe { GetModuleFileNameW(h, file_name.as_mut()) } > 0 {
@@ -249,10 +254,6 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                             error!("Error calling inproc_server_add_to_registry: {}", e);
                             return e.into();
                         }
-                    }
-                    None => {
-                        error!("No hinstance to calculate dll path");
-                        return ERROR_INVALID_FUNCTION.into();
                     }
                 }
             }

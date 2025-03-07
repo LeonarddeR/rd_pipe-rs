@@ -16,7 +16,7 @@ use std::io;
 use tracing::{debug, instrument, trace};
 use windows::core::GUID;
 use winreg::enums::KEY_ALL_ACCESS;
-use winreg::{enums::KEY_WRITE, transaction::Transaction, types::ToRegValue, RegKey, HKEY};
+use winreg::{HKEY, RegKey, enums::KEY_WRITE, transaction::Transaction, types::ToRegValue};
 
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 const RD_PIPE_PLUGIN_NAME: &str = "RdPipe";
