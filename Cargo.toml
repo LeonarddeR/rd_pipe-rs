@@ -33,7 +33,7 @@ tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.19"
 itertools = "0.14.0"
-windows-core = "0.60.1"
+windows-core = "0.61.0"
 windows-registry = "0.5.0"
 
 [dependencies.windows]
