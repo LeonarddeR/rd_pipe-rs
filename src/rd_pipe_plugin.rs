@@ -226,6 +226,7 @@ impl RdPipeChannelCallback {
                 let server = match ServerOptions::new()
                     .first_pipe_instance(first_pipe_instance)
                     .max_instances(1)
+                    .reject_remote_clients(true)
                     .create(&pipe_addr)
                 {
                     Ok(s) => s,
