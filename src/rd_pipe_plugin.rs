@@ -222,7 +222,10 @@ impl RdPipeChannelCallback {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
             loop {
-                trace!("Creating pipe server with address {}", pipe_addr);
+                trace!(
+                    "Creating pipe server with address {}, first instance {}",
+                    pipe_addr, first_pipe_instance
+                );
                 let server = match ServerOptions::new()
                     .first_pipe_instance(first_pipe_instance)
                     .max_instances(1)
