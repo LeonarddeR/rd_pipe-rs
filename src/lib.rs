@@ -15,6 +15,7 @@
 pub mod class_factory;
 pub mod rd_pipe_plugin;
 pub mod registry;
+pub mod security_descriptor;
 
 use crate::{
     class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,

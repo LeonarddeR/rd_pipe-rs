@@ -25,7 +25,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
+use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
     Win32::{
         Foundation::E_UNEXPECTED,
@@ -37,10 +37,13 @@ use windows::{
     },
     core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
 };
-use windows_core::{BOOL, OutRef};
+use windows_core::{BOOL, OutRef, Owned};
 use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
-use crate::ASYNC_RUNTIME;
+use crate::{
+    ASYNC_RUNTIME,
+    security_descriptor::{get_logon_sid, security_attributes_from_sddl},
+};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
 const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
@@ -221,17 +224,38 @@ impl RdPipeChannelCallback {
     ) -> JoinHandle<()> {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
+            let login_sid = match get_logon_sid() {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Can't get login sid,  {}", e);
+                    return;
+                }
+            };
+            let sddl = format!(r#"D:(A;;GA;;;{login_sid})"#, login_sid = login_sid);
+
             loop {
                 trace!(
                     "Creating pipe server with address {}, first instance {}",
                     pipe_addr, first_pipe_instance
                 );
-                let server = match ServerOptions::new()
-                    .first_pipe_instance(first_pipe_instance)
-                    .max_instances(1)
-                    .reject_remote_clients(true)
-                    .create(&pipe_addr)
-                {
+                let server = match unsafe {
+                    let mut attributes = match security_attributes_from_sddl(&sddl) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Can't create security attributes, {}", e);
+                            break;
+                        }
+                    };
+                    let _ = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
+
+                    ServerOptions::new()
+                        .first_pipe_instance(first_pipe_instance)
+                        .max_instances(1)
+                        .create_with_security_attributes_raw(
+                            &pipe_addr,
+                            &raw mut attributes as *mut _,
+                        )
+                } {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Error while creating named pipe server: {}", e);
