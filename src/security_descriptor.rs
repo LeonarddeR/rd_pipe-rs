@@ -32,6 +32,7 @@ use windows_core::{Error, HSTRING, PWSTR, Result};
 
 #[instrument]
 pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
+    trace!("Converting SDDL to security descriptor: {}", sddl);
     let mut security_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -49,7 +50,7 @@ pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> 
 }
 
 #[instrument]
-pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
+pub fn get_logon_sid() -> windows::core::Result<String> {
     unsafe {
         // Open current process token
         let mut token: HANDLE = HANDLE::default();
@@ -59,11 +60,11 @@ pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
         // First call to get buffer size
         let mut len: u32 = 0;
         trace!("Getting token information size");
-        GetTokenInformation(token, TokenGroups, None, 0, &mut len)?;
+        GetTokenInformation(token, TokenGroups, None, 0, &mut len).unwrap_or_default();
 
         let mut buffer = vec![0u8; len as usize];
         // Second call to get actual data
-        trace!("Getting token information, excepting size {}", len);
+        trace!("Getting token information, expecting size {}", len);
         GetTokenInformation(
             token,
             TokenGroups,
@@ -84,10 +85,9 @@ pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
                 let mut sid_str: PWSTR = PWSTR::default();
                 ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
                 debug!("Converted SID to string: {:?}", sid_str);
-                let sddl = format!("D:(A;;GA;;;{})", sid_str.display()).to_string();
-                trace!("SDDL: {}", sddl);
+                let ssid = sid_str.to_string().unwrap();
                 LocalFree(Some(HLOCAL(sid_str.0.cast())));
-                return Ok(sddl);
+                return Ok(ssid);
             }
         }
     }

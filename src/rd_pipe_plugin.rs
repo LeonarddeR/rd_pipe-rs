@@ -42,7 +42,7 @@ use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
 use crate::{
     ASYNC_RUNTIME,
-    security_descriptor::{get_logon_sid_sddl, security_attributes_from_sddl},
+    security_descriptor::{get_logon_sid, security_attributes_from_sddl},
 };
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
@@ -224,7 +224,7 @@ impl RdPipeChannelCallback {
     ) -> JoinHandle<()> {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
-            let login_sid = match get_logon_sid_sddl() {
+            let login_sid = match get_logon_sid() {
                 Ok(s) => s,
                 Err(e) => {
                     error!("Can't get login sid,  {}", e);
