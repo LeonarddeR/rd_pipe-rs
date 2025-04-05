@@ -12,40 +12,75 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::ptr::{null, null_mut};
-
 use tracing::instrument;
 use windows::Win32::{
-    Foundation::{HLOCAL, LocalFree},
+    Foundation::{HANDLE, HLOCAL, LocalFree},
     Security::{
-        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
-        PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            SDDL_REVISION_1,
+        },
+        GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY,
+        TokenGroups,
+    },
+    System::{
+        SystemServices::SE_GROUP_LOGON_ID,
+        Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
-use windows_core::{HSTRING, Owned, Result};
+use windows_core::{HSTRING, PWSTR, Result};
 
-#[derive(Debug)]
-struct SecurityAttributesWrapper(SECURITY_ATTRIBUTES, Owned<HLOCAL>);
+#[instrument]
+pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            &HSTRING::from(sddl),
+            SDDL_REVISION_1,
+            &mut security_descriptor,
+            None,
+        )
+    }?;
+    Ok(SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: security_descriptor.0,
+        bInheritHandle: false.into(),
+    })
+}
 
-impl SecurityAttributesWrapper {
-    #[instrument]
-    fn from_sddl(sddl: &str) -> Result<Self> {
-        let mut security_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
-        unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                &HSTRING::from(sddl),
-                SDDL_REVISION_1,
-                &mut security_descriptor,
-                None,
-            )
-        }?;
-        let attrs = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: security_descriptor.0,
-            bInheritHandle: false.into(),
-        };
-        Ok(SecurityAttributesWrapper(attrs, unsafe {
-            Owned::new(HLOCAL(security_descriptor.0))
-        }))
+#[instrument]
+pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
+    unsafe {
+        // Open current process token
+        let mut token: HANDLE = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+
+        // First call to get buffer size
+        let mut len: u32 = 0;
+        GetTokenInformation(token, TokenGroups, None, 0, &mut len)?;
+
+        let mut buffer = vec![0u8; len as usize];
+        GetTokenInformation(
+            token,
+            TokenGroups,
+            Some(buffer.as_mut_ptr() as *mut _),
+            len,
+            &mut len,
+        )?;
+
+        let groups = &*(buffer.as_ptr() as *const TOKEN_GROUPS);
+        let group_slice =
+            std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+
+        for group in group_slice {
+            if group.Attributes & SE_GROUP_LOGON_ID as u32 != 0 {
+                let mut sid_str: PWSTR = PWSTR::default();
+                ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
+                let sddl = format!("D:(A;;GA;;;{})", sid_str.display()).to_string();
+                LocalFree(Some(HLOCAL(sid_str.0.cast())));
+                return Ok(sddl);
+            }
+        }
     }
+    Err(windows::core::Error::from_win32())
 }
