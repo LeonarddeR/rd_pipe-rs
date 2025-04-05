@@ -40,6 +40,7 @@ windows-registry = "0.5.1"
 version = "0.61.1"
 features = [
     "Win32_Foundation",
+    "Win32_Security_Authorization",
     "Win32_System_SystemServices",
     "Win32_System_LibraryLoader",
     "Win32_System_Com",
