@@ -12,9 +12,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use tracing::instrument;
+use tracing::{debug, error, instrument, trace};
 use windows::Win32::{
-    Foundation::{HANDLE, HLOCAL, LocalFree},
+    Foundation::{ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -28,7 +28,7 @@ use windows::Win32::{
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
-use windows_core::{HSTRING, PWSTR, Result};
+use windows_core::{Error, HSTRING, PWSTR, Result};
 
 #[instrument]
 pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
@@ -53,13 +53,17 @@ pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
     unsafe {
         // Open current process token
         let mut token: HANDLE = HANDLE::default();
+        trace!("Opening process token");
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
 
         // First call to get buffer size
         let mut len: u32 = 0;
+        trace!("Getting token information size");
         GetTokenInformation(token, TokenGroups, None, 0, &mut len)?;
 
         let mut buffer = vec![0u8; len as usize];
+        // Second call to get actual data
+        trace!("Getting token information, excepting size {}", len);
         GetTokenInformation(
             token,
             TokenGroups,
@@ -71,16 +75,22 @@ pub fn get_logon_sid_sddl() -> windows::core::Result<String> {
         let groups = &*(buffer.as_ptr() as *const TOKEN_GROUPS);
         let group_slice =
             std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+        debug!("Token group count: {}", groups.GroupCount);
 
         for group in group_slice {
+            debug!("Group SID: {:?}", group.Sid);
             if group.Attributes & SE_GROUP_LOGON_ID as u32 != 0 {
+                debug!("Found logon SID");
                 let mut sid_str: PWSTR = PWSTR::default();
                 ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
+                debug!("Converted SID to string: {:?}", sid_str);
                 let sddl = format!("D:(A;;GA;;;{})", sid_str.display()).to_string();
+                trace!("SDDL: {}", sddl);
                 LocalFree(Some(HLOCAL(sid_str.0.cast())));
                 return Ok(sddl);
             }
         }
     }
-    Err(windows::core::Error::from_win32())
+    error!("Logon SID not found");
+    Err(Error::from(ERROR_NOT_FOUND))
 }
