@@ -161,6 +161,7 @@ impl fmt::Debug for RdPipeListenerCallback_Impl {
 }
 
 impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[instrument(skip(pchannel, ppcallback))]
     fn OnNewChannelConnection(
         &self,
@@ -343,6 +344,7 @@ impl fmt::Debug for RdPipeChannelCallback_Impl {
     }
 }
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);

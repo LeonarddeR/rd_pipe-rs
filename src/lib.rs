@@ -27,7 +27,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
+use std::{ffi::c_void, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -112,7 +112,7 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
 
 #[unsafe(no_mangle)]
 #[instrument]
-pub extern "stdcall" fn DllGetClassObject(
+pub unsafe extern "stdcall" fn DllGetClassObject(
     rclsid: *const GUID,
     riid: *const GUID,
     ppv: *mut *mut c_void,
@@ -134,16 +134,16 @@ pub extern "stdcall" fn DllGetClassObject(
     }
     trace!("Constructing class factory");
     let factory = ClassFactory;
-    let factory: IClassFactory = factory.into();
+    let mut factory: IClassFactory = factory.into();
     trace!("Setting result pointer to class factory");
-    *ppv = unsafe { transmute(factory) };
+    *ppv = &raw mut factory as *mut _;
 
     S_OK
 }
 
 #[unsafe(no_mangle)]
 #[instrument]
-pub extern "stdcall" fn VirtualChannelGetInstance(
+pub unsafe extern "stdcall" fn VirtualChannelGetInstance(
     riid: *const GUID,
     pnumobjs: *mut u32,
     ppo: *mut *mut c_void,
@@ -174,9 +174,9 @@ pub extern "stdcall" fn VirtualChannelGetInstance(
         }
         let ppo = unsafe { &mut *ppo };
         trace!("Constructing the plugin");
-        let plugin = RdPipePlugin::new();
+        let mut plugin = RdPipePlugin::new();
         trace!("Setting result pointer to plugin");
-        *ppo = unsafe { transmute(&plugin) };
+        *ppo = &raw mut plugin as *mut _;
     }
     S_OK
 }

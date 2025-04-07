@@ -12,7 +12,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{fmt, mem::transmute};
+use std::fmt;
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::{
@@ -39,6 +39,7 @@ impl fmt::Debug for ClassFactory_Impl {
 }
 
 impl IClassFactory_Impl for ClassFactory_Impl {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[instrument(skip(outer))]
     fn CreateInstance(
         &self,
@@ -56,14 +57,14 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         debug!("Creating plugin instance");
         match iid {
             IUnknown::IID => {
+                let mut plugin: IUnknown = RdPipePlugin::new().into();
                 trace!("Requested IUnknown");
-                let plugin: IUnknown = RdPipePlugin::new().into();
-                *object = unsafe { transmute(plugin) };
+                *object = &raw mut plugin as *mut _;
             }
             IWTSPlugin::IID => {
                 trace!("Requested IWTSPlugin");
-                let plugin: IWTSPlugin = RdPipePlugin::new().into();
-                *object = unsafe { transmute(plugin) };
+                let mut plugin: IWTSPlugin = RdPipePlugin::new().into();
+                *object = &raw mut plugin as *mut _;
             }
             _ => return Err(Error::from(E_NOINTERFACE)),
         }
