@@ -27,7 +27,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, panic, str::FromStr};
+use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -134,9 +134,9 @@ pub unsafe extern "stdcall" fn DllGetClassObject(
     }
     trace!("Constructing class factory");
     let factory = ClassFactory;
-    let mut factory: IClassFactory = factory.into();
+    let factory: IClassFactory = factory.into();
     trace!("Setting result pointer to class factory");
-    *ppv = &raw mut factory as *mut _;
+    *ppv = unsafe { transmute(factory) };
 
     S_OK
 }
@@ -174,9 +174,9 @@ pub unsafe extern "stdcall" fn VirtualChannelGetInstance(
         }
         let ppo = unsafe { &mut *ppo };
         trace!("Constructing the plugin");
-        let mut plugin = RdPipePlugin::new();
+        let plugin = RdPipePlugin::new();
         trace!("Setting result pointer to plugin");
-        *ppo = &raw mut plugin as *mut _;
+        *ppo = unsafe { transmute(&plugin) };
     }
     S_OK
 }
