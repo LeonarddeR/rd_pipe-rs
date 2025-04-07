@@ -12,7 +12,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{fmt, mem::transmute};
+use std::{ffi::c_void, fmt, mem::transmute};
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::{
@@ -59,12 +59,12 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             IUnknown::IID => {
                 trace!("Requested IUnknown");
                 let plugin: IUnknown = RdPipePlugin::new().into();
-                *object = unsafe { transmute(plugin) };
+                *object = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
             }
             IWTSPlugin::IID => {
                 trace!("Requested IWTSPlugin");
                 let plugin: IWTSPlugin = RdPipePlugin::new().into();
-                *object = unsafe { transmute(plugin) };
+                *object = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
             }
             _ => return Err(Error::from(E_NOINTERFACE)),
         }

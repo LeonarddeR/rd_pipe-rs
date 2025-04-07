@@ -49,7 +49,7 @@ use windows::{
     },
     core::{Interface, PCWSTR},
 };
-use windows_core::BOOL;
+use windows_core::{BOOL, OutRef, Ref};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 lazy_static::lazy_static! {
@@ -111,45 +111,56 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
 }
 
 #[unsafe(no_mangle)]
-#[instrument]
+#[instrument(skip_all)]
 pub unsafe extern "stdcall" fn DllGetClassObject(
-    rclsid: *const GUID,
-    riid: *const GUID,
-    ppv: *mut *mut c_void,
+    rclsid: Ref<GUID>,
+    riid: Ref<GUID>,
+    ppv: OutRef<IClassFactory>,
 ) -> HRESULT {
     debug!("DllGetClassObject called");
-    let clsid = unsafe { *rclsid };
-    let iid = unsafe { *riid };
-    let ppv = unsafe { &mut *ppv };
-    // ppv must be null if we fail so set it here for safety
-    *ppv = std::ptr::null_mut();
+    let clsid = match rclsid.ok() {
+        Ok(c) => *c,
+        Err(e) => {
+            return e.into();
+        }
+    };
+    let iid = match riid.ok() {
+        Ok(i) => *i,
+        Err(e) => {
+            return e.into();
+        }
+    };
 
     if clsid != CLSID_RD_PIPE_PLUGIN {
         error!("DllGetClassObject called for unknown class: {:?}", clsid);
+        _ = ppv.write(None);
         return CLASS_E_CLASSNOTAVAILABLE;
     }
     if iid != IClassFactory::IID {
         error!("DllGetClassObject called for unknown interface: {:?}", iid);
+        _ = ppv.write(None);
         return E_UNEXPECTED;
     }
     trace!("Constructing class factory");
     let factory = ClassFactory;
-    let factory: IClassFactory = factory.into();
     trace!("Setting result pointer to class factory");
-    *ppv = unsafe { transmute(factory) };
-
-    S_OK
+    ppv.write(Some(factory.into())).into()
 }
 
 #[unsafe(no_mangle)]
-#[instrument]
+#[instrument(skip(riid))]
 pub unsafe extern "stdcall" fn VirtualChannelGetInstance(
-    riid: *const GUID,
+    riid: Ref<GUID>,
     pnumobjs: *mut u32,
     ppo: *mut *mut c_void,
 ) -> HRESULT {
     debug!("VirtualChannelGetInstance called");
-    let riid = unsafe { *riid };
+    let riid = match riid.ok() {
+        Ok(i) => *i,
+        Err(e) => {
+            return e.into();
+        }
+    };
     if riid != IWTSPlugin::IID {
         error!(
             "VirtualChannelGetInstance called for unknown interface: {:?}",
@@ -174,9 +185,9 @@ pub unsafe extern "stdcall" fn VirtualChannelGetInstance(
         }
         let ppo = unsafe { &mut *ppo };
         trace!("Constructing the plugin");
-        let plugin = RdPipePlugin::new();
+        let plugin: IWTSPlugin = RdPipePlugin::new().into();
         trace!("Setting result pointer to plugin");
-        *ppo = unsafe { transmute(&plugin) };
+        *ppo = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
     }
     S_OK
 }
