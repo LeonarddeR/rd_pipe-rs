@@ -17,9 +17,7 @@ pub mod rd_pipe_plugin;
 pub mod registry;
 pub mod security_descriptor;
 
-use crate::{
-    class_factory::ClassFactory, rd_pipe_plugin::RdPipePlugin, registry::CLSID_RD_PIPE_PLUGIN,
-};
+use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
 use rd_pipe_plugin::REG_PATH;
 use registry::{
     COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
@@ -27,7 +25,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, mem::transmute, panic, str::FromStr};
+use std::{ffi::c_void, panic, str::FromStr};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -36,7 +34,6 @@ use windows::{
         System::{
             Com::IClassFactory,
             LibraryLoader::DisableThreadLibraryCalls,
-            RemoteDesktop::IWTSPlugin,
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
         },
     },
@@ -145,51 +142,6 @@ pub unsafe extern "stdcall" fn DllGetClassObject(
     let factory = ClassFactory;
     trace!("Setting result pointer to class factory");
     ppv.write(Some(factory.into())).into()
-}
-
-#[unsafe(no_mangle)]
-#[instrument(skip(riid))]
-pub unsafe extern "stdcall" fn VirtualChannelGetInstance(
-    riid: Ref<GUID>,
-    pnumobjs: *mut u32,
-    ppo: *mut *mut c_void,
-) -> HRESULT {
-    debug!("VirtualChannelGetInstance called");
-    let riid = match riid.ok() {
-        Ok(i) => *i,
-        Err(e) => {
-            return e.into();
-        }
-    };
-    if riid != IWTSPlugin::IID {
-        error!(
-            "VirtualChannelGetInstance called for unknown interface: {:?}",
-            riid
-        );
-        return E_UNEXPECTED;
-    }
-    let pnumobjs = unsafe { &mut *pnumobjs };
-    trace!(
-        "Checking whether result pointer is null (i.e. whether this call is a query for number of plugins or a query for the plugins itself)"
-    );
-    if ppo.is_null() {
-        debug!(
-            "Result pointer is null, client is querying for number of objects. Setting pnumobjs to 1, since we only support one plugin"
-        );
-        *pnumobjs = 1;
-    } else {
-        debug!("{} plugins requested", *pnumobjs);
-        if *pnumobjs != 1 {
-            error!("Invalid number of plugins requested: {}", *pnumobjs);
-            return E_UNEXPECTED;
-        }
-        let ppo = unsafe { &mut *ppo };
-        trace!("Constructing the plugin");
-        let plugin: IWTSPlugin = RdPipePlugin::new().into();
-        trace!("Setting result pointer to plugin");
-        *ppo = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
-    }
-    S_OK
 }
 
 const CMD_COM_SERVER: char = 'c'; // Registers/unregisters the COM server
