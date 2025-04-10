@@ -12,7 +12,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{ffi::c_void, fmt, mem::transmute};
+use core::{ffi::c_void, fmt, mem::transmute, ptr::null_mut};
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::{
@@ -22,14 +22,14 @@ use windows::{
             RemoteDesktop::IWTSPlugin,
         },
     },
-    core::{Error, GUID, IUnknown, Interface, Result, implement},
+    core::{Error, GUID, IUnknown, Interface as _, Result, implement},
 };
 use windows_core::BOOL;
 
 use crate::rd_pipe_plugin::RdPipePlugin;
 
-#[implement(IClassFactory)]
 #[derive(Debug)]
+#[implement(IClassFactory)]
 pub struct ClassFactory;
 
 impl fmt::Debug for ClassFactory_Impl {
@@ -45,26 +45,26 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         &self,
         outer: windows_core::Ref<'_, IUnknown>,
         iid: *const GUID,
-        object: *mut *mut core::ffi::c_void,
+        object: *mut *mut c_void,
     ) -> Result<()> {
-        let iid = unsafe { *iid };
-        let object = unsafe { &mut *object };
-        *object = std::ptr::null_mut();
-        trace!("Object with type {:?} requested", iid);
+        let riid = unsafe { *iid };
+        let robject = unsafe { &mut *object };
+        *robject = null_mut();
+        trace!("Object with type {:?} requested", riid);
         if outer.is_some() {
             return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
         debug!("Creating plugin instance");
-        match iid {
+        match riid {
             IUnknown::IID => {
                 trace!("Requested IUnknown");
                 let plugin: IUnknown = RdPipePlugin::new().into();
-                *object = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
+                *robject = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
             }
             IWTSPlugin::IID => {
                 trace!("Requested IWTSPlugin");
                 let plugin: IWTSPlugin = RdPipePlugin::new().into();
-                *object = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
+                *robject = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
             }
             _ => return Err(Error::from(E_NOINTERFACE)),
         }
@@ -73,7 +73,6 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 
     #[instrument]
     fn LockServer(&self, lock: BOOL) -> Result<()> {
-        assert!(lock.as_bool());
         Ok(())
     }
 }

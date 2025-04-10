@@ -213,7 +213,7 @@ impl RdPipeChannelCallback {
 
         Self {
             pipe_writer: pipe_writer.clone(),
-            join_handle: Self::process_pipe(pipe_writer.clone(), channel_agile, addr),
+            join_handle: Self::process_pipe(pipe_writer, channel_agile, addr),
         }
     }
 
@@ -232,7 +232,7 @@ impl RdPipeChannelCallback {
                     return;
                 }
             };
-            let sddl = format!(r#"D:(A;;GA;;;{login_sid})"#, login_sid = login_sid);
+            let sddl = format!("D:(A;;GA;;;{login_sid})", login_sid = login_sid);
 
             loop {
                 trace!(
@@ -349,19 +349,19 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);
         let mut writer_lock = self.pipe_writer.lock();
-        match *writer_lock {
-            Some(ref mut writer) => {
+        writer_lock.as_mut().map_or_else(
+            || {
+                debug!("Data received without an open named pipe");
+                Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
+            },
+            |writer| {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
                 trace!("Writing received data to pipe: {:?}", slice);
                 ASYNC_RUNTIME.block_on(writer.write(slice)).unwrap();
                 trace!("Received data written to pipe");
                 Ok(())
-            }
-            None => {
-                debug!("Data received without an open named pipe");
-                Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
-            }
-        }
+            },
+        )
     }
 
     #[instrument]

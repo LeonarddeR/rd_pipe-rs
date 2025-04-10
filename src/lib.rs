@@ -18,6 +18,7 @@ pub mod registry;
 pub mod security_descriptor;
 
 use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
+use core::{ffi::c_void, str::FromStr};
 use rd_pipe_plugin::REG_PATH;
 use registry::{
     COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
@@ -25,7 +26,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, panic, str::FromStr};
+use std::{panic, sync::LazyLock};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -49,12 +50,13 @@ use windows::{
 use windows_core::{BOOL, OutRef, Ref};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
-lazy_static::lazy_static! {
-    static ref ASYNC_RUNTIME: Runtime = {
-        trace!("Constructing runtime");
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
-    };
-}
+static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    trace!("Constructing runtime");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+});
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
