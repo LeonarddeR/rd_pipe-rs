@@ -27,7 +27,6 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-lazy_static = "1.5"
 parking_lot = "0.12.3"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"

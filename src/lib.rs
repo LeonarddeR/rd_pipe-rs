@@ -25,7 +25,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::panic;
+use std::{panic, sync::LazyLock};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
@@ -49,12 +49,13 @@ use windows::{
 use windows_core::{BOOL, OutRef, Ref};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
-lazy_static::lazy_static! {
-    static ref ASYNC_RUNTIME: Runtime = {
-        trace!("Constructing runtime");
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
-    };
-}
+static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    trace!("Constructing runtime");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+});
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
