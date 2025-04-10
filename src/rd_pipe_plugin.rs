@@ -232,7 +232,7 @@ impl RdPipeChannelCallback {
                     return;
                 }
             };
-            let sddl = format!(r#"D:(A;;GA;;;{login_sid})"#, login_sid = login_sid);
+            let sddl = format!("D:(A;;GA;;;{login_sid})", login_sid = login_sid);
 
             loop {
                 trace!(

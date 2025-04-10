@@ -10,7 +10,6 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU Affero General Public License for more details.
 // You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod class_factory;
 pub mod rd_pipe_plugin;
@@ -18,6 +17,7 @@ pub mod registry;
 pub mod security_descriptor;
 
 use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
+use core::{ffi::c_void, str::FromStr};
 use rd_pipe_plugin::REG_PATH;
 use registry::{
     COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
@@ -25,7 +25,7 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{ffi::c_void, panic, str::FromStr};
+use std::panic;
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
