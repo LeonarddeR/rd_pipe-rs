@@ -35,6 +35,8 @@ jobs:
             suffix: x64
           - target: aarch64-pc-windows-msvc
             suffix: arm64
+          - target: arm64ec-pc-windows-msvc
+            suffix: arm64ec
     steps:
       - name: Checkout
         uses: actions/checkout@v4
