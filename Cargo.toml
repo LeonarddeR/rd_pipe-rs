@@ -29,11 +29,23 @@ crate-type = ["cdylib"]
 [dependencies]
 parking_lot = "0.12.4"
 tracing = "0.1.41"
-tracing-appender = "0.2.3"
-tracing-subscriber = "0.3.19"
 itertools = "0.14.0"
 windows-core = "0.61.2"
 windows-registry = "0.5.3"
+
+[dependencies.tracing-appender]
+version = "0.2.3"
+features = [
+    "parking_lot",
+]
+
+[dependencies.tracing-subscriber]
+version = "0.3.19"
+default-features = false
+features = [
+    "parking_lot",
+    "tracing-log"
+]
 
 [dependencies.windows]
 version = "0.61.3"
@@ -53,6 +65,10 @@ version = "1.46.1"
 features = [
     "rt-multi-thread",
     "net",
+    "parking_lot",
     "io-util",
     "time"
 ]
+
+[patch.crates-io]
+tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
