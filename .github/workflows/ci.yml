@@ -9,6 +9,10 @@ on:
       - master
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   style:
     name: Check Style
@@ -27,6 +31,7 @@ jobs:
     name: Build
     runs-on: windows-2025
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: i686-pc-windows-msvc
