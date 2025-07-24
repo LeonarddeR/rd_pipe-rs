@@ -71,4 +71,4 @@ features = [
 ]
 
 [patch.crates-io]
-tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
+tokio = { git = "https://github.com/tokio-rs/tokio", rev = "aff24dfbe" }
