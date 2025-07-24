@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - master
   push:
     branches:
       - master
@@ -23,7 +25,7 @@ jobs:
         run: cargo fmt --all -- --check
   build:
     name: Build
-    runs-on: windows-latest
+    runs-on: windows-2025
     strategy:
       matrix:
         include:
