@@ -9,6 +9,12 @@ on:
       - master
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   style:
     name: Check Style
@@ -23,29 +29,42 @@ jobs:
           components: rustfmt
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
+
   build:
     name: Build
     runs-on: windows-2025
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: i686-pc-windows-msvc
             suffix: x86
+            toolchain: stable
           - target: x86_64-pc-windows-msvc
             suffix: x64
+            toolchain: stable
           - target: aarch64-pc-windows-msvc
             suffix: arm64
+            toolchain: stable
+          - target: arm64ec-pc-windows-msvc
+            suffix: arm64ec
+            toolchain: nightly
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: ${{ matrix.toolchain }}
           target: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
+
       - name: Build target
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo +${{ matrix.toolchain }} build --release --target ${{ matrix.target }}
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
