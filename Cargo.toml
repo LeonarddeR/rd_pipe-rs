@@ -61,7 +61,7 @@ features = [
 ]
 
 [dependencies.tokio]
-version = "1.46.1"
+version = "1.47"
 features = [
     "rt-multi-thread",
     "net",
@@ -69,6 +69,3 @@ features = [
     "io-util",
     "time"
 ]
-
-[patch.crates-io]
-tokio = { git = "https://github.com/tokio-rs/tokio", rev = "aff24dfbe" }

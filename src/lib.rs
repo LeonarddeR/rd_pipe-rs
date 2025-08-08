@@ -68,7 +68,7 @@ fn get_log_level_from_registry(parent_key: &windows_registry::Key) -> windows_co
 static mut INSTANCE: Option<HMODULE> = None;
 
 #[unsafe(no_mangle)]
-pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
+pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
             unsafe {
@@ -111,7 +111,7 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
 
 #[unsafe(no_mangle)]
 #[instrument(skip_all)]
-pub unsafe extern "stdcall" fn DllGetClassObject(
+pub unsafe extern "system" fn DllGetClassObject(
     rclsid: Ref<GUID>,
     riid: Ref<GUID>,
     ppv: OutRef<IClassFactory>,
@@ -153,7 +153,7 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 
 #[unsafe(no_mangle)]
 #[instrument]
-pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
+pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     let path_string: String;
     debug!("DllInstall called");
     if cmd_line.is_null() {
