@@ -84,6 +84,12 @@ impl RdPipePlugin {
     }
 }
 
+impl Default for RdPipePlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for RdPipePlugin_Impl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("RdPipePlugin_Impl").finish()
