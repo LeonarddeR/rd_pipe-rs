@@ -68,7 +68,7 @@ fn get_log_level_from_registry(parent_key: &windows_registry::Key) -> windows_co
 static mut INSTANCE: Option<HMODULE> = None;
 
 #[unsafe(no_mangle)]
-pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
+pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
             unsafe {
@@ -111,7 +111,7 @@ pub extern "stdcall" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_v
 
 #[unsafe(no_mangle)]
 #[instrument(skip_all)]
-pub unsafe extern "stdcall" fn DllGetClassObject(
+pub extern "system" fn DllGetClassObject(
     rclsid: Ref<GUID>,
     riid: Ref<GUID>,
     ppv: OutRef<IClassFactory>,
@@ -153,7 +153,7 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 
 #[unsafe(no_mangle)]
 #[instrument]
-pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
+pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     let path_string: String;
     debug!("DllInstall called");
     if cmd_line.is_null() {
@@ -213,11 +213,11 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return e.into();
                 }
             }
-            if commands.contains(CMD_MSTS) {
-                if let Err(e) = msts_add_to_registry(scope_hkey) {
-                    error!("Error calling msts_add_to_registry: {}", e);
-                    return e.into();
-                }
+            if commands.contains(CMD_MSTS)
+                && let Err(e) = msts_add_to_registry(scope_hkey)
+            {
+                error!("Error calling msts_add_to_registry: {}", e);
+                return e.into();
             }
             #[cfg(target_arch = "x86")]
             if commands.contains(CMD_CITRIX) {
@@ -235,25 +235,25 @@ pub extern "stdcall" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                     return e.into();
                 }
             }
-            if commands.contains(CMD_MSTS) {
-                if let Err(e) = delete_from_registry(
+            if commands.contains(CMD_MSTS)
+                && let Err(e) = delete_from_registry(
                     scope_hkey,
                     TS_ADD_INS_FOLDER,
                     TS_ADD_IN_RD_PIPE_FOLDER_NAME,
-                ) {
-                    error!("Error calling delete_from_registry: {}", e);
-                    return e.into();
-                }
+                )
+            {
+                error!("Error calling delete_from_registry: {}", e);
+                return e.into();
             }
-            if commands.contains(CMD_COM_SERVER) {
-                if let Err(e) = delete_from_registry(
+            if commands.contains(CMD_COM_SERVER)
+                && let Err(e) = delete_from_registry(
                     scope_hkey,
                     COM_CLS_FOLDER,
                     &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
-                ) {
-                    error!("Error calling delete_from_registry: {}", e);
-                    return e.into();
-                }
+                )
+            {
+                error!("Error calling delete_from_registry: {}", e);
+                return e.into();
             }
         }
     }
