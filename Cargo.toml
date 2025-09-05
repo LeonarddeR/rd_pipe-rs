@@ -30,7 +30,7 @@ crate-type = ["cdylib"]
 parking_lot = "0.12.4"
 tracing = "0.1.41"
 itertools = "0.14.0"
-windows-core = "0.61.2"
+windows-core = "0.62.0"
 windows-registry = "0.5.3"
 
 [dependencies.tracing-appender]
