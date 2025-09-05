@@ -31,7 +31,7 @@ parking_lot = "0.12.4"
 tracing = "0.1.41"
 itertools = "0.14.0"
 windows-core = "0.61.2"
-windows-registry = "0.5.3"
+windows-registry = "0.6.0"
 
 [dependencies.tracing-appender]
 version = "0.2.3"
