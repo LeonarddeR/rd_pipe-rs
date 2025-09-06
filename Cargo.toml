@@ -15,7 +15,7 @@
 [package]
 name = "rd_pipe"
 description = "Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Leonard de Ruijter <alderuijter@gmail.com>"]
 readme = "../readme.md"
 repository = "https://github.com/leonardder/rd_pipe-rs"
@@ -35,8 +35,8 @@ opt-level = "s"
 parking_lot = "0.12.4"
 tracing = "0.1.41"
 itertools = "0.14.0"
-windows-core = "0.61.2"
-windows-registry = "0.5.3"
+windows-core = "0.62.0"
+windows-registry = "0.6.0"
 
 [dependencies.tracing-appender]
 version = "0.2.3"
@@ -45,7 +45,7 @@ features = [
 ]
 
 [dependencies.tracing-subscriber]
-version = "0.3.19"
+version = "0.3.20"
 default-features = false
 features = [
     "parking_lot",
@@ -53,7 +53,7 @@ features = [
 ]
 
 [dependencies.windows]
-version = "0.61.3"
+version = "0.62.0"
 features = [
     "Win32_Foundation",
     "Win32_Security_Authorization",
