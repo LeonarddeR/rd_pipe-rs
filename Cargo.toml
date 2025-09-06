@@ -24,7 +24,12 @@ categories = ["network-programming", "os::windows-apis"]
 edition = "2024"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
 
 [dependencies]
 parking_lot = "0.12.4"

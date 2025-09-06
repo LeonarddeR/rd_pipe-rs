@@ -48,11 +48,10 @@ jobs:
             toolchain: stable
           - target: arm64ec-pc-windows-msvc
             suffix: arm64ec
-            toolchain: nightly
+            toolchain: beta
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
@@ -72,4 +71,5 @@ jobs:
           compression-level: 9
           path: |
             ./target/${{ matrix.target }}/release/*.dll*
+            ./target/${{ matrix.target }}/release/*.lib
             ./target/${{ matrix.target }}/release/*.pdb
