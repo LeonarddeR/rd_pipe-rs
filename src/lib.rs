@@ -198,7 +198,7 @@ pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                         path_string = String::from_utf16_lossy(&file_name);
                     }
                     false => {
-                        let e = windows::core::Error::from_win32();
+                        let e = windows::core::Error::from_thread();
                         error!("Error calling GetModuleFileNameW: {}", e);
                         return e.into();
                     }
