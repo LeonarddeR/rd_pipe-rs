@@ -32,11 +32,11 @@ codegen-units = 1
 opt-level = "s"
 
 [dependencies]
-parking_lot = "0.12.4"
+parking_lot = "0.12.5"
 tracing = "0.1.41"
 itertools = "0.14.0"
-windows-core = "0.62.0"
-windows-registry = "0.6.0"
+windows-core = "0.62.2"
+windows-registry = "0.6.1"
 
 [dependencies.tracing-appender]
 version = "0.2.3"
@@ -53,7 +53,7 @@ features = [
 ]
 
 [dependencies.windows]
-version = "0.62.0"
+version = "0.62.2"
 features = [
     "Win32_Foundation",
     "Win32_Security_Authorization",
@@ -66,7 +66,7 @@ features = [
 ]
 
 [dependencies.tokio]
-version = "1.47"
+version = "1.48"
 features = [
     "rt-multi-thread",
     "net",
