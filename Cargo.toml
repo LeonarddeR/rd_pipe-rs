@@ -33,19 +33,19 @@ opt-level = "s"
 
 [dependencies]
 parking_lot = "0.12.5"
-tracing = "0.1.41"
+tracing = "0.1.44"
 itertools = "0.14.0"
 windows-core = "0.62.2"
 windows-registry = "0.6.1"
 
 [dependencies.tracing-appender]
-version = "0.2.3"
+version = "0.2.4"
 features = [
     "parking_lot",
 ]
 
 [dependencies.tracing-subscriber]
-version = "0.3.20"
+version = "0.3.22"
 default-features = false
 features = [
     "parking_lot",
