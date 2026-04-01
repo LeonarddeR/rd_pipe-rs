@@ -1,5 +1,4 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
-// RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 // Dynamic Virtual Channel Plugin structs
 // Copyright (C) 2022-2025 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
@@ -363,7 +362,10 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
             |writer| {
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
                 trace!("Writing received data to pipe: {:?}", slice);
-                ASYNC_RUNTIME.block_on(writer.write(slice)).unwrap();
+                if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
+                    error!("Error writing received data to pipe: {}", e);
+                    return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+                }
                 trace!("Received data written to pipe");
                 Ok(())
             },

@@ -14,7 +14,7 @@
 
 use tracing::{debug, error, instrument, trace};
 use windows::Win32::{
-    Foundation::{ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
+    Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -57,38 +57,45 @@ pub fn get_logon_sid() -> windows::core::Result<String> {
         trace!("Opening process token");
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
 
-        // First call to get buffer size
-        let mut len: u32 = 0;
-        trace!("Getting token information size");
-        GetTokenInformation(token, TokenGroups, None, 0, &mut len).unwrap_or_default();
+        let result = get_logon_sid_from_token(token);
+        // Always close the token handle, regardless of success or failure
+        let _ = CloseHandle(token);
+        result
+    }
+}
 
-        let mut buffer = vec![0u8; len as usize];
-        // Second call to get actual data
-        trace!("Getting token information, expecting size {}", len);
-        GetTokenInformation(
-            token,
-            TokenGroups,
-            Some(buffer.as_mut_ptr() as *mut _),
-            len,
-            &mut len,
-        )?;
+unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<String> {
+    // First call to get buffer size
+    let mut len: u32 = 0;
+    trace!("Getting token information size");
+    GetTokenInformation(token, TokenGroups, None, 0, &mut len).unwrap_or_default();
 
-        let groups = &*(buffer.as_ptr() as *const TOKEN_GROUPS);
-        let group_slice =
-            std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
-        debug!("Token group count: {}", groups.GroupCount);
+    let mut buffer = vec![0u8; len as usize];
+    // Second call to get actual data
+    trace!("Getting token information, expecting size {}", len);
+    GetTokenInformation(
+        token,
+        TokenGroups,
+        Some(buffer.as_mut_ptr() as *mut _),
+        len,
+        &mut len,
+    )?;
 
-        for group in group_slice {
-            debug!("Group SID: {:?}", group.Sid);
-            if group.Attributes & SE_GROUP_LOGON_ID as u32 != 0 {
-                debug!("Found logon SID");
-                let mut sid_str: PWSTR = PWSTR::default();
-                ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
-                debug!("Converted SID to string: {:?}", sid_str);
-                let ssid = sid_str.to_string().unwrap();
-                LocalFree(Some(HLOCAL(sid_str.0.cast())));
-                return Ok(ssid);
-            }
+    let groups = &*(buffer.as_ptr() as *const TOKEN_GROUPS);
+    let group_slice =
+        std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+    debug!("Token group count: {}", groups.GroupCount);
+
+    for group in group_slice {
+        debug!("Group SID: {:?}", group.Sid);
+        if group.Attributes & SE_GROUP_LOGON_ID as u32 != 0 {
+            debug!("Found logon SID");
+            let mut sid_str: PWSTR = PWSTR::default();
+            ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
+            debug!("Converted SID to string: {:?}", sid_str);
+            let ssid = sid_str.to_string().unwrap();
+            LocalFree(Some(HLOCAL(sid_str.0.cast())));
+            return Ok(ssid);
         }
     }
     error!("Logon SID not found");

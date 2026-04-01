@@ -26,26 +26,27 @@ use registry::{
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
-use std::{panic, sync::LazyLock};
+use std::{
+    panic,
+    sync::{
+        LazyLock,
+        atomic::{AtomicIsize, Ordering},
+    },
+};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
     Win32::{
-        Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, S_OK},
+        Foundation::{
+            CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE, S_OK,
+        },
         System::{
             Com::IClassFactory,
-            LibraryLoader::DisableThreadLibraryCalls,
+            LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW},
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
         },
     },
-    core::{GUID, HRESULT},
-};
-use windows::{
-    Win32::{
-        Foundation::{ERROR_INVALID_PARAMETER, HMODULE},
-        System::LibraryLoader::GetModuleFileNameW,
-    },
-    core::{Interface, PCWSTR},
+    core::{GUID, HRESULT, Interface, PCWSTR},
 };
 use windows_core::{BOOL, OutRef, Ref};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
@@ -65,15 +66,13 @@ fn get_log_level_from_registry(parent_key: &windows_registry::Key) -> windows_co
     sub_key.get_u32(REG_VALUE_LOG_LEVEL)
 }
 
-static mut INSTANCE: Option<HMODULE> = None;
+static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
-            unsafe {
-                INSTANCE = Some(hinst);
-            }
+            INSTANCE.store(hinst.0, Ordering::Release);
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
@@ -154,7 +153,6 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 #[unsafe(no_mangle)]
 #[instrument]
 pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
-    let path_string: String;
     debug!("DllInstall called");
     if cmd_line.is_null() {
         error!("No command line provided");
@@ -174,87 +172,80 @@ pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
         error!("No arguments provided");
         return ERROR_INVALID_PARAMETER.into();
     }
-    let arguments: Vec<&str> = arguments.split(" ").collect();
+    let arguments: Vec<&str> = arguments.split(' ').collect();
     let commands = arguments[0].to_lowercase();
     #[cfg(not(target_arch = "x86"))]
     if commands.contains(CMD_CITRIX) {
         error!("Citrix registration not supported for non-X86 builds");
         return ERROR_INVALID_PARAMETER.into();
     }
-    let scope_hkey = match commands.contains(CMD_LOCAL_MACHINE) {
-        true => LOCAL_MACHINE,
-        false => CURRENT_USER,
+    let scope_hkey = if commands.contains(CMD_LOCAL_MACHINE) {
+        LOCAL_MACHINE
+    } else {
+        CURRENT_USER
     };
-    match install {
-        true => {
-            if commands.contains(CMD_COM_SERVER) {
-                if arguments.len() == 1 {
-                    error!("No channel names provided");
-                    return ERROR_INVALID_PARAMETER.into();
-                }
-                let mut file_name = [0u16; 256];
-                match unsafe { GetModuleFileNameW(INSTANCE, file_name.as_mut()) } > 0 {
-                    true => {
-                        path_string = String::from_utf16_lossy(&file_name);
-                    }
-                    false => {
-                        let e = windows::core::Error::from_thread();
-                        error!("Error calling GetModuleFileNameW: {}", e);
-                        return e.into();
-                    }
-                }
-                if let Err(e) = inproc_server_add_to_registry(
-                    scope_hkey,
-                    COM_CLS_FOLDER,
-                    &path_string,
-                    &arguments[1..],
-                ) {
-                    error!("Error calling inproc_server_add_to_registry: {}", e);
-                    return e.into();
-                }
+    if install {
+        if commands.contains(CMD_COM_SERVER) {
+            if arguments.len() == 1 {
+                error!("No channel names provided");
+                return ERROR_INVALID_PARAMETER.into();
             }
-            if commands.contains(CMD_MSTS)
-                && let Err(e) = msts_add_to_registry(scope_hkey)
-            {
-                error!("Error calling msts_add_to_registry: {}", e);
+            let mut file_name = [0u16; 256];
+            let instance = HMODULE(INSTANCE.load(Ordering::Acquire));
+            let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut()) };
+            if len == 0 {
+                let e = windows::core::Error::from_thread();
+                error!("Error calling GetModuleFileNameW: {}", e);
                 return e.into();
             }
-            #[cfg(target_arch = "x86")]
-            if commands.contains(CMD_CITRIX) {
-                if let Err(e) = ctx_add_to_registry(scope_hkey) {
-                    error!("Error calling ctx_add_to_registry: {}", e);
-                    return e.into();
-                }
+            let path_string = String::from_utf16_lossy(&file_name[..len as usize]);
+            if let Err(e) = inproc_server_add_to_registry(
+                scope_hkey,
+                COM_CLS_FOLDER,
+                &path_string,
+                &arguments[1..],
+            ) {
+                error!("Error calling inproc_server_add_to_registry: {}", e);
+                return e.into();
             }
         }
-        false => {
-            #[cfg(target_arch = "x86")]
-            if commands.contains(CMD_CITRIX) {
-                if let Err(e) = ctx_delete_from_registry(scope_hkey) {
-                    error!("Error calling ctx_delete_from_registry: {}", e);
-                    return e.into();
-                }
-            }
-            if commands.contains(CMD_MSTS)
-                && let Err(e) = delete_from_registry(
-                    scope_hkey,
-                    TS_ADD_INS_FOLDER,
-                    TS_ADD_IN_RD_PIPE_FOLDER_NAME,
-                )
-            {
-                error!("Error calling delete_from_registry: {}", e);
+        if commands.contains(CMD_MSTS)
+            && let Err(e) = msts_add_to_registry(scope_hkey)
+        {
+            error!("Error calling msts_add_to_registry: {}", e);
+            return e.into();
+        }
+        #[cfg(target_arch = "x86")]
+        if commands.contains(CMD_CITRIX) {
+            if let Err(e) = ctx_add_to_registry(scope_hkey) {
+                error!("Error calling ctx_add_to_registry: {}", e);
                 return e.into();
             }
-            if commands.contains(CMD_COM_SERVER)
-                && let Err(e) = delete_from_registry(
-                    scope_hkey,
-                    COM_CLS_FOLDER,
-                    &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
-                )
-            {
-                error!("Error calling delete_from_registry: {}", e);
+        }
+    } else {
+        #[cfg(target_arch = "x86")]
+        if commands.contains(CMD_CITRIX) {
+            if let Err(e) = ctx_delete_from_registry(scope_hkey) {
+                error!("Error calling ctx_delete_from_registry: {}", e);
                 return e.into();
             }
+        }
+        if commands.contains(CMD_MSTS)
+            && let Err(e) =
+                delete_from_registry(scope_hkey, TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME)
+        {
+            error!("Error calling delete_from_registry: {}", e);
+            return e.into();
+        }
+        if commands.contains(CMD_COM_SERVER)
+            && let Err(e) = delete_from_registry(
+                scope_hkey,
+                COM_CLS_FOLDER,
+                &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
+            )
+        {
+            error!("Error calling delete_from_registry: {}", e);
+            return e.into();
         }
     }
     S_OK
