@@ -72,7 +72,7 @@ static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => {
-            INSTANCE.store(hinst.0, Ordering::Release);
+            INSTANCE.store(hinst.0 as _, Ordering::Release);
             // Set up logging
             let file_appender =
                 tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
@@ -191,7 +191,7 @@ pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
                 return ERROR_INVALID_PARAMETER.into();
             }
             let mut file_name = [0u16; 256];
-            let instance = HMODULE(INSTANCE.load(Ordering::Acquire));
+            let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
             let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut()) };
             if len == 0 {
                 let e = windows::core::Error::from_thread();
