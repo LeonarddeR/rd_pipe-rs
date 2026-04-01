@@ -14,7 +14,7 @@
 
 use tracing::{debug, error, instrument, trace};
 use windows::Win32::{
-    Foundation::{ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
+    Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -57,6 +57,15 @@ pub fn get_logon_sid() -> windows::core::Result<String> {
         trace!("Opening process token");
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
 
+        let result = get_logon_sid_from_token(token);
+        // Always close the token handle, regardless of success or failure
+        let _ = CloseHandle(token);
+        result
+    }
+}
+
+unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<String> {
+    unsafe {
         // First call to get buffer size
         let mut len: u32 = 0;
         trace!("Getting token information size");
@@ -90,7 +99,7 @@ pub fn get_logon_sid() -> windows::core::Result<String> {
                 return Ok(ssid);
             }
         }
+        error!("Logon SID not found");
+        Err(Error::from(ERROR_NOT_FOUND))
     }
-    error!("Logon SID not found");
-    Err(Error::from(ERROR_NOT_FOUND))
 }

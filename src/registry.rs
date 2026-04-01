@@ -27,7 +27,7 @@ const TS_ADD_IN_NAME_VALUE_NAME: &str = "Name";
 const TS_ADD_IN_VIEW_ENABLED_VALUE_NAME: &str = "View Enabled";
 const CTX_MODULES_FOLDER: &str =
     r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
-const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME: &str = "DvcPlugins";
+const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME: &str = "DvcPlugins";
 
 #[instrument]
 pub fn inproc_server_add_to_registry(
@@ -50,8 +50,7 @@ pub fn inproc_server_add_to_registry(
     trace!("Setting default value");
     key.set_string("", RD_PIPE_PLUGIN_NAME)?;
     trace!("Setting {}", _COM_CLS_CHANNEL_NAMES_VALUE_NAME);
-    let channel_names: Vec<&str> = channel_names.into();
-    key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, &channel_names)?;
+    key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
     let key = key
         .options()
@@ -135,7 +134,7 @@ pub fn ctx_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
         .write()
         .transaction(&t)
         .open("DVCAdapter")?;
-    let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if !plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
@@ -143,10 +142,10 @@ pub fn ctx_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
         plugins_list.push(RD_PIPE_PLUGIN_NAME);
         trace!(
             "Setting value {}",
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME
         );
         key.set_string(
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME,
             plugins_list.join(","),
         )?;
     }
@@ -173,7 +172,7 @@ pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
         .write()
         .transaction(&t)
         .open("DVCAdapter")?;
-    let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME)?;
+    let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
     trace!("Current plugins under DVC adapter: {}", &plugins);
     let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
     if plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
@@ -181,10 +180,10 @@ pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
         plugins_list.retain(|s| s != &RD_PIPE_PLUGIN_NAME);
         trace!(
             "Setting value {}",
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME
         );
         key.set_string(
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAAME,
+            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME,
             plugins_list.join(","),
         )?;
     }
