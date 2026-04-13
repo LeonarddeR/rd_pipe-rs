@@ -24,7 +24,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, E_INVALIDARG, HLOCAL};
+use windows::Win32::Foundation::{E_INVALIDARG, ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
     Win32::{
         Foundation::E_UNEXPECTED,
@@ -222,8 +222,8 @@ impl RdPipeChannelCallback {
             channel_name,
             channel.as_raw() as usize
         );
-        let channel_agile = AgileReference::new(channel)
-            .expect("Failed to create agile reference for channel");
+        let channel_agile =
+            AgileReference::new(channel).expect("Failed to create agile reference for channel");
         let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
 
@@ -297,7 +297,8 @@ impl RdPipeChannelCallback {
                             retry_count, e
                         );
                         sleep(retry_delay).await;
-                        retry_delay = (retry_delay * 2).min(Duration::from_millis(MAX_RETRY_DELAY_MS));
+                        retry_delay =
+                            (retry_delay * 2).min(Duration::from_millis(MAX_RETRY_DELAY_MS));
                         continue;
                     }
                 };
@@ -305,7 +306,8 @@ impl RdPipeChannelCallback {
                 trace!("Initiate connection to pipe client");
                 match server.connect().await {
                     Ok(_) => {
-                        let channel = channel_agile.resolve()
+                        let channel = channel_agile
+                            .resolve()
                             .expect("Failed to resolve agile channel reference");
                         // SAFETY: Writing single byte MSG_XON to channel through COM interface.
                         match unsafe { channel.Write(&[MSG_XON], None) } {
@@ -328,7 +330,8 @@ impl RdPipeChannelCallback {
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
-                            let channel = channel_agile.resolve()
+                            let channel = channel_agile
+                                .resolve()
                                 .expect("Failed to resolve agile channel reference");
                             // SAFETY: Writing single byte MSG_XOFF to channel through COM interface.
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
@@ -341,7 +344,8 @@ impl RdPipeChannelCallback {
                         }
                         Ok(n) => {
                             trace!("read {} bytes", n);
-                            let channel = channel_agile.resolve()
+                            let channel = channel_agile
+                                .resolve()
                                 .expect("Failed to resolve agile channel reference");
                             // SAFETY: Writing buffer data to channel through COM interface.
                             // Buffer slice is valid as it was just populated by read_buf.
@@ -358,7 +362,8 @@ impl RdPipeChannelCallback {
                         }
                         Err(e) => {
                             error!("Error reading from pipe client: {}", e);
-                            let channel = channel_agile.resolve()
+                            let channel = channel_agile
+                                .resolve()
                                 .expect("Failed to resolve agile channel reference");
                             // SAFETY: Writing single byte MSG_XOFF to channel through COM interface.
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
