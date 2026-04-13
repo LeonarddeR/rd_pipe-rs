@@ -16,7 +16,7 @@ use core::{ffi::c_void, fmt, mem::transmute, ptr::null_mut};
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::{
-        Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+        Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_POINTER},
         System::{
             Com::{IClassFactory, IClassFactory_Impl},
             RemoteDesktop::IWTSPlugin,
@@ -47,6 +47,11 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         iid: *const GUID,
         object: *mut *mut c_void,
     ) -> Result<()> {
+        // Validate pointers before dereferencing
+        if iid.is_null() || object.is_null() {
+            return Err(Error::from(E_POINTER));
+        }
+        // SAFETY: Validated non-null above. COM contract guarantees valid pointers.
         let riid = unsafe { *iid };
         let robject = unsafe { &mut *object };
         *robject = null_mut();
@@ -59,11 +64,15 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             IUnknown::IID => {
                 trace!("Requested IUnknown");
                 let plugin: IUnknown = RdPipePlugin::new().into();
+                // SAFETY: IUnknown and *mut c_void have identical memory layout per COM ABI.
+                // The transmute converts the COM interface to a raw pointer as required by the API.
                 *robject = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
             }
             IWTSPlugin::IID => {
                 trace!("Requested IWTSPlugin");
                 let plugin: IWTSPlugin = RdPipePlugin::new().into();
+                // SAFETY: IWTSPlugin and *mut c_void have identical memory layout per COM ABI.
+                // The transmute converts the COM interface to a raw pointer as required by the API.
                 *robject = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
             }
             _ => return Err(Error::from(E_NOINTERFACE)),

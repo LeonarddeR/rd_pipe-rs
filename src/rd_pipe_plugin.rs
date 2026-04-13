@@ -24,7 +24,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
+use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, E_INVALIDARG, HLOCAL};
 use windows::{
     Win32::{
         Foundation::E_UNEXPECTED,
@@ -67,6 +67,8 @@ impl RdPipePlugin {
         debug!("Creating listener with name {}", channel_name);
         let callback: IWTSListenerCallback =
             RdPipeListenerCallback::new(channel_name.clone()).into();
+        // SAFETY: Creating null-terminated channel name string for COM API.
+        // The string is created with proper null termination and passed as raw pointer.
         unsafe {
             channel_mgr.CreateListener(
                 PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
@@ -180,13 +182,17 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
             Some(c) => c,
             None => return Err(Error::from(E_UNEXPECTED)),
         };
+        // SAFETY: pbaccept pointer validated by COM runtime, guaranteed valid for write.
         let pbaccept = unsafe { &mut *pbaccept };
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
             RdPipeChannelCallback::new(channel, &self.name).into();
         trace!("Callback {:?} created", callback);
-        ppcallback.write(callback.into()).unwrap();
+        ppcallback.write(callback.into()).map_err(|e| {
+            error!("Failed to write callback: {}", e);
+            e
+        })?;
         Ok(())
     }
 }
@@ -195,6 +201,10 @@ const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 
 const MSG_XON: u8 = 0x11;
 const MSG_XOFF: u8 = 0x13;
+const MAX_BUFFER_SIZE: u32 = 10 * 1024 * 1024; // 10MB safety limit for incoming data
+const MAX_PIPE_CREATE_RETRIES: u32 = 10; // Maximum retry attempts for pipe creation
+const INITIAL_RETRY_DELAY_MS: u64 = 100; // Initial retry delay in milliseconds
+const MAX_RETRY_DELAY_MS: u64 = 5000; // Maximum retry delay in milliseconds
 
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
@@ -212,7 +222,8 @@ impl RdPipeChannelCallback {
             channel_name,
             channel.as_raw() as usize
         );
-        let channel_agile = AgileReference::new(channel).unwrap();
+        let channel_agile = AgileReference::new(channel)
+            .expect("Failed to create agile reference for channel");
         let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
 
@@ -230,6 +241,9 @@ impl RdPipeChannelCallback {
     ) -> JoinHandle<()> {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
+            let mut retry_count = 0;
+            let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
+
             let login_sid = match get_logon_sid() {
                 Ok(s) => s,
                 Err(e) => {
@@ -244,6 +258,8 @@ impl RdPipeChannelCallback {
                     "Creating pipe server with address {}, first instance {}",
                     pipe_addr, first_pipe_instance
                 );
+                // SAFETY: Creating security attributes from SDDL string, then wrapping descriptor
+                // in Owned to ensure proper cleanup via RAII.
                 let server = match unsafe {
                     let mut attributes = match security_attributes_from_sddl(&sddl) {
                         Ok(s) => s,
@@ -262,10 +278,26 @@ impl RdPipeChannelCallback {
                             &raw mut attributes as *mut _,
                         )
                 } {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        retry_count = 0; // Reset retry count on success
+                        retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
+                        s
+                    }
                     Err(e) => {
-                        error!("Error while creating named pipe server: {}", e);
-                        sleep(Duration::from_millis(100)).await;
+                        retry_count += 1;
+                        if retry_count >= MAX_PIPE_CREATE_RETRIES {
+                            error!(
+                                "Max retries ({}) exceeded creating pipe server, giving up",
+                                MAX_PIPE_CREATE_RETRIES
+                            );
+                            break;
+                        }
+                        error!(
+                            "Error creating pipe server (attempt {}): {}",
+                            retry_count, e
+                        );
+                        sleep(retry_delay).await;
+                        retry_delay = (retry_delay * 2).min(Duration::from_millis(MAX_RETRY_DELAY_MS));
                         continue;
                     }
                 };
@@ -273,7 +305,9 @@ impl RdPipeChannelCallback {
                 trace!("Initiate connection to pipe client");
                 match server.connect().await {
                     Ok(_) => {
-                        let channel = channel_agile.resolve().unwrap();
+                        let channel = channel_agile.resolve()
+                            .expect("Failed to resolve agile channel reference");
+                        // SAFETY: Writing single byte MSG_XON to channel through COM interface.
                         match unsafe { channel.Write(&[MSG_XON], None) } {
                             Ok(_) => trace!("Wrote XON to channel"),
                             Err(e) => {
@@ -294,7 +328,9 @@ impl RdPipeChannelCallback {
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = channel_agile.resolve()
+                                .expect("Failed to resolve agile channel reference");
+                            // SAFETY: Writing single byte MSG_XOFF to channel through COM interface.
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
                                 Ok(_) => trace!("Wrote XOFF to channel"),
                                 Err(e) => {
@@ -305,7 +341,10 @@ impl RdPipeChannelCallback {
                         }
                         Ok(n) => {
                             trace!("read {} bytes", n);
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = channel_agile.resolve()
+                                .expect("Failed to resolve agile channel reference");
+                            // SAFETY: Writing buffer data to channel through COM interface.
+                            // Buffer slice is valid as it was just populated by read_buf.
                             match unsafe { channel.Write(&buf, None) } {
                                 Ok(_) => trace!("Wrote {} bytes to channel", n),
                                 Err(e) => {
@@ -319,7 +358,9 @@ impl RdPipeChannelCallback {
                         }
                         Err(e) => {
                             error!("Error reading from pipe client: {}", e);
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = channel_agile.resolve()
+                                .expect("Failed to resolve agile channel reference");
+                            // SAFETY: Writing single byte MSG_XOFF to channel through COM interface.
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
                                 Ok(_) => trace!("Wrote XOFF to channel"),
                                 Err(e) => {
@@ -353,6 +394,21 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
     #[instrument]
     fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
         debug!("Data received, buffer has size {}", cbsize);
+
+        // Validate buffer pointer and size
+        if pbuffer.is_null() {
+            error!("Null buffer pointer received");
+            return Err(Error::from(E_INVALIDARG));
+        }
+        if cbsize == 0 {
+            debug!("Zero-sized buffer, ignoring");
+            return Ok(());
+        }
+        if cbsize > MAX_BUFFER_SIZE {
+            error!("Buffer size {} exceeds maximum {}", cbsize, MAX_BUFFER_SIZE);
+            return Err(Error::from(E_INVALIDARG));
+        }
+
         let mut writer_lock = self.pipe_writer.lock();
         writer_lock.as_mut().map_or_else(
             || {
@@ -360,6 +416,8 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
                 Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
             },
             |writer| {
+                // SAFETY: Buffer pointer validated non-null above, cbsize validated within reasonable bounds.
+                // COM contract guarantees buffer is valid for the specified size.
                 let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
                 trace!("Writing received data to pipe: {:?}", slice);
                 if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
