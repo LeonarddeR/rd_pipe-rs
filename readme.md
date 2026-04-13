@@ -14,3 +14,27 @@ Therefore, RD Pipe implements the COM server part, exposing a named pipe instead
 Building RD Pipe is straight forward when you are acustomed to development in the Rust language.
 If not, it is yet pretty simple, as you mainly have to follow the [Rust installation instructions for Windows](https://www.rust-lang.org/tools/install).
 After that, building RD Pipe is as easy as executing `cargo build` from the command line.
+
+### Building ARM64X libraries
+
+The project supports creating ARM64X (hybrid ARM64/ARM64EC) libraries. This requires:
+1. Building static libraries for both ARM64 and ARM64EC targets
+2. Combining them using LLVM 22+ (specifically `lld-link`)
+
+**Manual build:**
+```powershell
+# Build ARM64 static library
+cargo build --release --target aarch64-pc-windows-msvc
+
+# Build ARM64EC static library
+cargo build --release --target arm64ec-pc-windows-msvc
+
+# Combine into ARM64X DLL (requires LLVM 22+)
+.\create_arm64x.ps1 `
+  -Arm64LibPath .\target\aarch64-pc-windows-msvc\release\rd_pipe.lib `
+  -Arm64EcLibPath .\target\arm64ec-pc-windows-msvc\release\rd_pipe.lib `
+  -OutputPath .\rd_pipe_arm64x.dll
+```
+
+**GitHub Actions:**
+The CI workflow automatically builds ARM64X libraries. The `combine-arm64x` job downloads the ARM64 and ARM64EC artifacts and combines them into a single ARM64X library.

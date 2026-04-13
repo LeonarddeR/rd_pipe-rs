@@ -78,23 +78,29 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install LLVM 22
+        shell: pwsh
         run: |
-          # Download and install LLVM 22
+          # Install LLVM 22 (required for ARM64X support via lld-link)
+          # Using direct download from GitHub releases
           $llvmVersion = "22.1.0"
           $llvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/LLVM-$llvmVersion-win64.exe"
           $llvmInstaller = "$env:TEMP\llvm-installer.exe"
 
-          Write-Host "Downloading LLVM $llvmVersion..."
-          Invoke-WebRequest -Uri $llvmUrl -OutFile $llvmInstaller
+          Write-Host "Downloading LLVM $llvmVersion from GitHub releases..."
+          Invoke-WebRequest -Uri $llvmUrl -OutFile $llvmInstaller -UseBasicParsing
 
           Write-Host "Installing LLVM..."
-          Start-Process -FilePath $llvmInstaller -ArgumentList "/S" -Wait
+          Start-Process -FilePath $llvmInstaller -ArgumentList "/S", "/D=C:\Program Files\LLVM" -Wait -NoNewWindow
 
-          # Add LLVM to PATH
-          $llvmPath = "C:\Program Files\LLVM\bin"
-          echo "$llvmPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Add LLVM to PATH for this step and future steps
+          $llvmBinPath = "C:\Program Files\LLVM\bin"
+          echo $llvmBinPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          Write-Host "LLVM installed successfully"
+          # Also add to current session
+          $env:Path = "$llvmBinPath;$env:Path"
+
+          Write-Host "Verifying LLVM installation..."
+          & "C:\Program Files\LLVM\bin\lld-link.exe" --version
 
       - name: Download ARM64 artifacts
         uses: actions/download-artifact@v4
