@@ -52,7 +52,8 @@ $lldLinkArgs = @(
     "/out:$OutputPath",
     $Arm64LibPath,
     $Arm64EcLibPath,
-    "/nologo"
+    "/nologo",
+    "/subsystem:windows"
 )
 
 Write-Host "Running: lld-link $($lldLinkArgs -join ' ')"
