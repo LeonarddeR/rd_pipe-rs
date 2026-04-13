@@ -81,14 +81,14 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup LLVM
-        uses: aminya/setup-llvm@v1
+        uses: ZhongRuoyu/setup-llvm@master
         with:
-          version: "22.1.0"
+          llvm-version: 22
 
       - name: Download ARM64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: rd_pipe-arm64
+          fname: rd_pipe-arm64
           path: ./artifacts/arm64
 
       - name: Download ARM64EC artifacts
