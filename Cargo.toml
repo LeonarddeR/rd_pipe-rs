@@ -24,6 +24,7 @@ categories = ["network-programming", "os::windows-apis"]
 edition = "2024"
 
 [lib]
+# Build cdylib for x86/x64, staticlib for arm64/arm64ec (to be combined into arm64x)
 crate-type = ["cdylib", "staticlib"]
 
 [profile.release]

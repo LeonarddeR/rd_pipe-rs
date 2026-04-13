@@ -69,3 +69,77 @@ jobs:
             ./target/${{ matrix.target }}/release/*.dll*
             ./target/${{ matrix.target }}/release/*.lib
             ./target/${{ matrix.target }}/release/*.pdb
+
+  combine-arm64x:
+    name: Combine ARM64X
+    runs-on: windows-2025
+    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install LLVM 22
+        run: |
+          # Download and install LLVM 22
+          $llvmVersion = "22.1.0"
+          $llvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/LLVM-$llvmVersion-win64.exe"
+          $llvmInstaller = "$env:TEMP\llvm-installer.exe"
+
+          Write-Host "Downloading LLVM $llvmVersion..."
+          Invoke-WebRequest -Uri $llvmUrl -OutFile $llvmInstaller
+
+          Write-Host "Installing LLVM..."
+          Start-Process -FilePath $llvmInstaller -ArgumentList "/S" -Wait
+
+          # Add LLVM to PATH
+          $llvmPath = "C:\Program Files\LLVM\bin"
+          echo "$llvmPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "LLVM installed successfully"
+
+      - name: Download ARM64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: rd_pipe-arm64
+          path: ./artifacts/arm64
+
+      - name: Download ARM64EC artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: rd_pipe-arm64ec
+          path: ./artifacts/arm64ec
+
+      - name: Combine into ARM64X
+        shell: pwsh
+        run: |
+          # Find the static library files
+          $arm64Lib = Get-ChildItem -Path ./artifacts/arm64 -Filter "*.lib" -Recurse | Select-Object -First 1
+          $arm64ecLib = Get-ChildItem -Path ./artifacts/arm64ec -Filter "*.lib" -Recurse | Select-Object -First 1
+
+          if (-not $arm64Lib) {
+            Write-Error "ARM64 static library not found"
+            exit 1
+          }
+
+          if (-not $arm64ecLib) {
+            Write-Error "ARM64EC static library not found"
+            exit 1
+          }
+
+          Write-Host "Found ARM64 lib: $($arm64Lib.FullName)"
+          Write-Host "Found ARM64EC lib: $($arm64ecLib.FullName)"
+
+          # Create output directory
+          New-Item -ItemType Directory -Force -Path ./output/arm64x
+
+          # Run the combination script
+          .\create_arm64x.ps1 `
+            -Arm64LibPath $arm64Lib.FullName `
+            -Arm64EcLibPath $arm64ecLib.FullName `
+            -OutputPath ./output/arm64x/rd_pipe.dll
+
+      - name: Upload ARM64X artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rd_pipe-arm64x
+          compression-level: 9
+          path: ./output/arm64x/*
