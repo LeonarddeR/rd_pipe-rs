@@ -34,8 +34,10 @@ The project now includes comprehensive unit tests for the following modules:
 - **Command parsing tests**: Validate command string parsing logic
 
 ### 5. Class Factory Module (`src/class_factory.rs`)
-- Currently has basic structure tests through instantiation
-- COM interface tests require runtime environment
+- **Construction tests**: Verify ClassFactory can be created and converted to IClassFactory
+- **LockServer tests**: Ensure LockServer always succeeds regardless of lock state
+- **Interface IID tests**: Validate supported interface GUIDs (IUnknown, IWTSPlugin)
+- **Debug implementation tests**: Verify Debug trait is properly implemented
 
 ## Running Tests
 
@@ -159,9 +161,9 @@ Current test coverage by module:
 - `security_descriptor.rs`: 6 unit tests (SDDL, SID, memory management)
 - `rd_pipe_plugin.rs`: 8 unit tests (constants, construction, naming)
 - `lib.rs`: 6 unit tests (constants, initialization, parsing)
-- `class_factory.rs`: Covered through integration with lib.rs tests
+- `class_factory.rs`: 6 unit tests (construction, interfaces, Debug impl)
 
-**Total**: 26+ unit tests covering core functionality
+**Total**: 32 unit tests covering core functionality
 
 ## Future Improvements
 

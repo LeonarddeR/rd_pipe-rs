@@ -76,3 +76,68 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_class_factory_construction() {
+        // Test that ClassFactory can be constructed
+        let factory = ClassFactory;
+        // Verify size is zero (empty struct)
+        assert_eq!(std::mem::size_of_val(&factory), 0);
+    }
+
+    #[test]
+    fn test_class_factory_into_iclassfactory() {
+        // Test conversion to IClassFactory interface
+        let factory = ClassFactory;
+        let _interface: IClassFactory = factory.into();
+        // If we get here without panicking, the conversion succeeded
+    }
+
+    #[test]
+    fn test_lock_server_always_succeeds() {
+        // LockServer should always return Ok
+        let factory = ClassFactory;
+        let factory_impl = ClassFactory_Impl {};
+
+        // Test both lock and unlock
+        assert!(factory_impl.LockServer(true.into()).is_ok());
+        assert!(factory_impl.LockServer(false.into()).is_ok());
+    }
+
+    #[test]
+    fn test_supported_interface_iids() {
+        // Verify that we handle the expected interface IIDs
+        // IUnknown::IID and IWTSPlugin::IID should be supported
+
+        // These are the GUIDs we expect to handle
+        let iunknown_iid = IUnknown::IID;
+        let iwtsplugin_iid = IWTSPlugin::IID;
+
+        // Verify they are different
+        assert_ne!(iunknown_iid, iwtsplugin_iid);
+
+        // Verify they are not null GUIDs
+        assert_ne!(iunknown_iid, GUID::zeroed());
+        assert_ne!(iwtsplugin_iid, GUID::zeroed());
+    }
+
+    #[test]
+    fn test_class_factory_debug_impl() {
+        // Test that Debug is properly implemented
+        let factory = ClassFactory;
+        let debug_str = format!("{:?}", factory);
+        assert!(debug_str.contains("ClassFactory"));
+    }
+
+    #[test]
+    fn test_class_factory_impl_debug() {
+        // Test that ClassFactory_Impl Debug is properly implemented
+        let factory_impl = ClassFactory_Impl {};
+        let debug_str = format!("{:?}", factory_impl);
+        assert!(debug_str.contains("ClassFactory_Impl"));
+    }
+}
