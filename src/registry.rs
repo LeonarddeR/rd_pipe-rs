@@ -193,3 +193,64 @@ pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
     trace!("Committing transaction");
     t.commit()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clsid_is_valid() {
+        // Verify the CLSID is not a null GUID
+        assert_ne!(CLSID_RD_PIPE_PLUGIN, GUID::zeroed());
+
+        // Verify the CLSID matches expected value
+        assert_eq!(
+            CLSID_RD_PIPE_PLUGIN,
+            GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3)
+        );
+    }
+
+    #[test]
+    fn test_constants_are_valid() {
+        // Ensure constants are not empty
+        assert!(!COM_CLS_FOLDER.is_empty());
+        assert!(!TS_ADD_INS_FOLDER.is_empty());
+        assert!(!TS_ADD_IN_RD_PIPE_FOLDER_NAME.is_empty());
+        assert!(!RD_PIPE_PLUGIN_NAME.is_empty());
+
+        // Ensure paths use correct Windows registry format
+        assert!(COM_CLS_FOLDER.contains("SOFTWARE"));
+        assert!(TS_ADD_INS_FOLDER.contains("Software"));
+    }
+
+    #[test]
+    fn test_plugin_name_consistency() {
+        // Verify that the constant used in folder names matches the plugin name
+        assert_eq!(TS_ADD_IN_RD_PIPE_FOLDER_NAME, RD_PIPE_PLUGIN_NAME);
+    }
+
+    #[test]
+    fn test_key_path_format() {
+        // Test the key path format generation
+        let key_path = format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN);
+        assert!(key_path.contains(COM_CLS_FOLDER));
+        assert!(key_path.contains(&format!("{:?}", CLSID_RD_PIPE_PLUGIN)));
+    }
+
+    #[test]
+    fn test_ts_add_in_path_format() {
+        // Test Terminal Services add-in path format
+        let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
+        assert!(key_path.contains("Terminal Server Client"));
+        assert!(key_path.contains("AddIns"));
+        assert!(key_path.ends_with(RD_PIPE_PLUGIN_NAME));
+    }
+
+    #[test]
+    fn test_citrix_key_name_format() {
+        // Test Citrix plugin key name format
+        let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+        assert!(key_name.starts_with("DVCPlugin_"));
+        assert!(key_name.ends_with(RD_PIPE_PLUGIN_NAME));
+    }
+}

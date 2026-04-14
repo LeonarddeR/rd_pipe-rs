@@ -30,6 +30,23 @@ jobs:
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
 
+  test:
+    name: Test
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --target x86_64-pc-windows-msvc
+
   build:
     name: Build
     runs-on: windows-2025

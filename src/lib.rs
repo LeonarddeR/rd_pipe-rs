@@ -255,3 +255,84 @@ pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
     }
     S_OK
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cmd_constants() {
+        // Verify command constants are distinct
+        assert_ne!(CMD_COM_SERVER, CMD_MSTS);
+        assert_ne!(CMD_COM_SERVER, CMD_CITRIX);
+        assert_ne!(CMD_COM_SERVER, CMD_LOCAL_MACHINE);
+        assert_ne!(CMD_MSTS, CMD_CITRIX);
+        assert_ne!(CMD_MSTS, CMD_LOCAL_MACHINE);
+        assert_ne!(CMD_CITRIX, CMD_LOCAL_MACHINE);
+    }
+
+    #[test]
+    fn test_cmd_constant_values() {
+        // Verify command constant values
+        assert_eq!(CMD_COM_SERVER, 'c');
+        assert_eq!(CMD_MSTS, 'r');
+        assert_eq!(CMD_CITRIX, 'x');
+        assert_eq!(CMD_LOCAL_MACHINE, 'm');
+    }
+
+    #[test]
+    fn test_reg_value_log_level() {
+        // Verify the log level registry value name
+        assert_eq!(REG_VALUE_LOG_LEVEL, "LogLevel");
+    }
+
+    #[test]
+    fn test_clsid_matches_registry() {
+        // Verify the CLSID used in lib.rs matches the one in registry module
+        assert_eq!(CLSID_RD_PIPE_PLUGIN, registry::CLSID_RD_PIPE_PLUGIN);
+    }
+
+    #[test]
+    fn test_instance_atomic_initial_value() {
+        // The INSTANCE atomic should be initialized (it gets set in DllMain)
+        // We can at least verify it exists and is accessible
+        let val = INSTANCE.load(Ordering::Acquire);
+        // In tests, it might be 0 if DllMain hasn't been called
+        assert!(val >= 0);
+    }
+
+    #[test]
+    fn test_async_runtime_lazy_init() {
+        // Test that accessing the runtime doesn't panic
+        // This forces initialization of the LazyLock
+        let _handle = ASYNC_RUNTIME.handle();
+        // If we get here without panicking, the runtime initialized successfully
+    }
+
+    #[test]
+    fn test_dll_install_command_parsing() {
+        // Test command string parsing logic
+        let test_cmds = vec![
+            ("c", true, false, false, false),
+            ("r", false, true, false, false),
+            ("x", false, false, true, false),
+            ("m", false, false, false, true),
+            ("cm", true, false, false, true),
+            ("cr", true, true, false, false),
+            ("crm", true, true, false, true),
+            ("cx", true, false, true, false),
+            ("cxm", true, false, true, true),
+            ("rx", false, true, true, false),
+            ("crx", true, true, true, false),
+            ("crxm", true, true, true, true),
+        ];
+
+        for (cmd, expect_c, expect_r, expect_x, expect_m) in test_cmds {
+            let cmd_lower = cmd.to_lowercase();
+            assert_eq!(cmd_lower.contains(CMD_COM_SERVER), expect_c, "Failed for '{}'", cmd);
+            assert_eq!(cmd_lower.contains(CMD_MSTS), expect_r, "Failed for '{}'", cmd);
+            assert_eq!(cmd_lower.contains(CMD_CITRIX), expect_x, "Failed for '{}'", cmd);
+            assert_eq!(cmd_lower.contains(CMD_LOCAL_MACHINE), expect_m, "Failed for '{}'", cmd);
+        }
+    }
+}

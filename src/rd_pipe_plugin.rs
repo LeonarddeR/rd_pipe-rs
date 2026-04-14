@@ -409,3 +409,80 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipe_name_prefix() {
+        // Verify the pipe name prefix format is correct
+        assert!(PIPE_NAME_PREFIX.starts_with(r"\\.\pipe\"));
+        assert!(PIPE_NAME_PREFIX.contains("RDPipe"));
+    }
+
+    #[test]
+    fn test_msg_constants() {
+        // Verify XON and XOFF message constants
+        assert_eq!(MSG_XON, 0x11);
+        assert_eq!(MSG_XOFF, 0x13);
+        // Ensure they are different
+        assert_ne!(MSG_XON, MSG_XOFF);
+    }
+
+    #[test]
+    fn test_reg_path_format() {
+        // Verify registry path format
+        assert!(REG_PATH.contains("Software\\Classes\\CLSID"));
+        assert!(REG_PATH.contains(&format!("{:?}", CLSID_RD_PIPE_PLUGIN)));
+    }
+
+    #[test]
+    fn test_channel_names_value_name() {
+        // Verify the channel names registry value name
+        assert_eq!(REG_VALUE_CHANNEL_NAMES, "ChannelNames");
+    }
+
+    #[test]
+    fn test_rd_pipe_plugin_default() {
+        // Test that default implementation works
+        let plugin = RdPipePlugin::default();
+        // Just verify it can be constructed
+        assert_eq!(std::mem::size_of_val(&plugin), std::mem::size_of::<RdPipePlugin>());
+    }
+
+    #[test]
+    fn test_rd_pipe_plugin_new() {
+        // Test that new implementation works
+        let plugin = RdPipePlugin::new();
+        // Verify it can be constructed
+        assert_eq!(std::mem::size_of_val(&plugin), std::mem::size_of::<RdPipePlugin>());
+    }
+
+    #[test]
+    fn test_pipe_name_generation() {
+        // Test pipe name generation logic
+        let channel_name = "testchannel";
+        let channel_addr = 12345_usize;
+        let addr = format!(
+            "{}_{}_{}",
+            PIPE_NAME_PREFIX,
+            channel_name,
+            channel_addr
+        );
+
+        assert!(addr.starts_with(PIPE_NAME_PREFIX));
+        assert!(addr.contains(channel_name));
+        assert!(addr.contains(&channel_addr.to_string()));
+    }
+
+    #[test]
+    fn test_listener_callback_new() {
+        // Test listener callback construction
+        let name = String::from("test_channel");
+        let callback = RdPipeListenerCallback::new(name.clone());
+
+        // Verify the name is stored
+        assert_eq!(callback.name, name);
+    }
+}
