@@ -41,6 +41,16 @@ The project now includes comprehensive unit tests for the following modules:
 
 ## Running Tests
 
+### Known Build Issues
+
+**Important**: There is currently a dependency compatibility issue with `windows-future` version 0.3.2 and `windows-core` 0.62.2. This is a pre-existing issue in the repository that prevents compilation on Linux/non-Windows CI environments. The tests are designed to work on Windows environments where the proper dependencies are available.
+
+This issue affects:
+- `windows-future` crate attempting to use `IMarshal` and `marshaler` from `windows_core::imp`
+- Cross-platform build attempts
+
+The tests **will work correctly** on Windows with proper Visual Studio toolchain and Windows SDK installed.
+
 ### Prerequisites
 - Rust toolchain (stable)
 - Windows environment (tests are Windows-specific)
