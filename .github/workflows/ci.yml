@@ -30,6 +30,32 @@ jobs:
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
 
+  test:
+    name: Test
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: i686-pc-windows-msvc
+          - target: x86_64-pc-windows-msvc
+          - target: aarch64-pc-windows-msvc
+          - target: arm64ec-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --target x86_64-pc-windows-msvc
+
   build:
     name: Build
     runs-on: windows-2025

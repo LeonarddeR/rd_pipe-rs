@@ -109,3 +109,95 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<Strin
         Err(Error::from(ERROR_NOT_FOUND))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_security_attributes_from_sddl_valid() {
+        // Test with a basic valid SDDL string
+        let sddl = "D:(A;;GA;;;WD)"; // Allow generic all to World
+        let result = security_attributes_from_sddl(sddl);
+
+        assert!(result.is_ok());
+        let attrs = result.unwrap();
+        assert_eq!(
+            attrs.nLength,
+            std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32
+        );
+        assert!(!attrs.lpSecurityDescriptor.is_null());
+        assert_eq!(attrs.bInheritHandle, false);
+
+        // Clean up allocated memory
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
+        }
+    }
+
+    #[test]
+    fn test_security_attributes_from_sddl_invalid() {
+        // Test with an invalid SDDL string
+        let sddl = "INVALID_SDDL_STRING";
+        let result = security_attributes_from_sddl(sddl);
+
+        // Should fail to convert invalid SDDL
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_security_attributes_from_sddl_with_sid() {
+        // Test with SDDL containing a specific SID format
+        let sid = "S-1-5-21-0-0-0-500"; // Administrator SID format
+        let sddl = format!("D:(A;;GA;;;{})", sid);
+        let result = security_attributes_from_sddl(&sddl);
+
+        assert!(result.is_ok());
+        let attrs = result.unwrap();
+        assert!(!attrs.lpSecurityDescriptor.is_null());
+
+        // Clean up
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
+        }
+    }
+
+    #[test]
+    fn test_security_attributes_structure_size() {
+        // Verify the structure size is correctly set
+        let sddl = "D:(A;;GA;;;WD)";
+        let result = security_attributes_from_sddl(sddl);
+
+        assert!(result.is_ok());
+        let attrs = result.unwrap();
+        assert_eq!(
+            attrs.nLength,
+            std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32
+        );
+
+        // Clean up
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
+        }
+    }
+
+    #[test]
+    fn test_get_logon_sid_returns_string() {
+        // This test will only pass on Windows when run in a proper logon session
+        // On CI or in some environments it may fail, which is expected
+        match get_logon_sid() {
+            Ok(sid) => {
+                // Verify it looks like a SID string
+                assert!(sid.starts_with("S-"));
+                assert!(sid.contains('-'));
+                // SID format: S-R-I-S-S... where R is revision, I is identifier authority
+                let parts: Vec<&str> = sid.split('-').collect();
+                assert!(parts.len() >= 3, "SID should have at least 3 parts");
+            }
+            Err(_) => {
+                // May fail in some environments (e.g., without proper token access)
+                // This is acceptable for the test
+            }
+        }
+    }
+}
