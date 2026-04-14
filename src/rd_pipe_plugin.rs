@@ -184,9 +184,9 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
         *pbaccept = BOOL::from(true);
         debug!("Creating callback");
         let callback: IWTSVirtualChannelCallback =
-            RdPipeChannelCallback::new(channel, &self.name).into();
+            RdPipeChannelCallback::new(channel, &self.name)?.into();
         trace!("Callback {:?} created", callback);
-        ppcallback.write(callback.into()).unwrap();
+        ppcallback.write(callback.into())?;
         Ok(())
     }
 }
@@ -205,21 +205,21 @@ pub struct RdPipeChannelCallback {
 
 impl RdPipeChannelCallback {
     #[instrument]
-    pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Self {
+    pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Result<Self> {
         let addr = format!(
             "{}_{}_{}",
             PIPE_NAME_PREFIX,
             channel_name,
             channel.as_raw() as usize
         );
-        let channel_agile = AgileReference::new(channel).unwrap();
+        let channel_agile = AgileReference::new(channel)?;
         let pipe_writer = Arc::new(Mutex::new(None));
         debug!("Constructing the callback");
 
-        Self {
+        Ok(Self {
             pipe_writer: pipe_writer.clone(),
             join_handle: Self::process_pipe(pipe_writer, channel_agile, addr),
-        }
+        })
     }
 
     #[instrument]
@@ -273,7 +273,13 @@ impl RdPipeChannelCallback {
                 trace!("Initiate connection to pipe client");
                 match server.connect().await {
                     Ok(_) => {
-                        let channel = channel_agile.resolve().unwrap();
+                        let channel = match channel_agile.resolve() {
+                            Ok(channel) => channel,
+                            Err(e) => {
+                                error!("Failed to resolve agile reference for channel: {}", e);
+                                break;
+                            }
+                        };
                         match unsafe { channel.Write(&[MSG_XON], None) } {
                             Ok(_) => trace!("Wrote XON to channel"),
                             Err(e) => {
@@ -294,7 +300,13 @@ impl RdPipeChannelCallback {
                     match server_reader.read_buf(&mut buf).await {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = match channel_agile.resolve() {
+                                Ok(channel) => channel,
+                                Err(e) => {
+                                    error!("Failed to resolve agile reference for channel: {}", e);
+                                    break 'reader;
+                                }
+                            };
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
                                 Ok(_) => trace!("Wrote XOFF to channel"),
                                 Err(e) => {
@@ -305,7 +317,13 @@ impl RdPipeChannelCallback {
                         }
                         Ok(n) => {
                             trace!("read {} bytes", n);
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = match channel_agile.resolve() {
+                                Ok(channel) => channel,
+                                Err(e) => {
+                                    error!("Failed to resolve agile reference for channel: {}", e);
+                                    break 'reader;
+                                }
+                            };
                             match unsafe { channel.Write(&buf, None) } {
                                 Ok(_) => trace!("Wrote {} bytes to channel", n),
                                 Err(e) => {
@@ -319,7 +337,13 @@ impl RdPipeChannelCallback {
                         }
                         Err(e) => {
                             error!("Error reading from pipe client: {}", e);
-                            let channel = channel_agile.resolve().unwrap();
+                            let channel = match channel_agile.resolve() {
+                                Ok(channel) => channel,
+                                Err(e) => {
+                                    error!("Failed to resolve agile reference for channel: {}", e);
+                                    break 'reader;
+                                }
+                            };
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
                                 Ok(_) => trace!("Wrote XOFF to channel"),
                                 Err(e) => {
@@ -376,7 +400,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
     fn OnClose(&self) -> Result<()> {
         let mut writer_guard = self.pipe_writer.lock();
         if let Some(ref mut writer) = *writer_guard {
-            ASYNC_RUNTIME.block_on(writer.shutdown()).unwrap();
+            ASYNC_RUNTIME.block_on(writer.shutdown())?;
             *writer_guard = None;
         }
         if !self.join_handle.is_finished() {

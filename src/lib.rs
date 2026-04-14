@@ -56,7 +56,7 @@ static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .expect("Failed to create Tokio runtime")
 });
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
@@ -97,8 +97,13 @@ pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_vo
                 "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
                 log_level
             );
-            unsafe { DisableThreadLibraryCalls(hinst) }.unwrap();
-            trace!("Disabled thread library calls");
+            match unsafe { DisableThreadLibraryCalls(hinst) } {
+                Ok(_) => trace!("Disabled thread library calls"),
+                Err(e) => {
+                    error!("Failed to disable thread library calls: {:?}", e);
+                    return false.into();
+                }
+            };
         }
         DLL_PROCESS_DETACH => {
             debug!("DllMain: DLL_PROCESS_DETACH");
