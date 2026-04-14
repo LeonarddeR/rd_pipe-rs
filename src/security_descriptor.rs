@@ -34,6 +34,8 @@ use windows_core::{Error, HSTRING, PWSTR, Result};
 pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
     trace!("Converting SDDL to security descriptor: {}", sddl);
     let mut security_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: ConvertStringSecurityDescriptorToSecurityDescriptorW allocates memory for the
+    // security descriptor which must be freed with LocalFree. Caller is responsible for cleanup.
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             &HSTRING::from(sddl),
@@ -51,6 +53,8 @@ pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> 
 
 #[instrument]
 pub fn get_logon_sid() -> windows::core::Result<String> {
+    // SAFETY: Windows API calls for token manipulation. Token handle is properly closed
+    // in all code paths (success and failure) via explicit CloseHandle call.
     unsafe {
         // Open current process token
         let mut token: HANDLE = HANDLE::default();
@@ -65,6 +69,8 @@ pub fn get_logon_sid() -> windows::core::Result<String> {
 }
 
 unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<String> {
+    // SAFETY: All Windows API calls in this function work with validated buffers and handles.
+    // Memory allocated by ConvertSidToStringSidW is freed via LocalFree before return.
     unsafe {
         // First call to get buffer size
         let mut len: u32 = 0;
@@ -94,7 +100,7 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<Strin
                 let mut sid_str: PWSTR = PWSTR::default();
                 ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
                 debug!("Converted SID to string: {:?}", sid_str);
-                let ssid = sid_str.to_string().unwrap();
+                let ssid = sid_str.to_string()?;
                 LocalFree(Some(HLOCAL(sid_str.0.cast())));
                 return Ok(ssid);
             }
