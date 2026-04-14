@@ -100,9 +100,9 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<Strin
                 let mut sid_str: PWSTR = PWSTR::default();
                 ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
                 debug!("Converted SID to string: {:?}", sid_str);
-                let ssid = sid_str.to_string()?;
+                let ssid = sid_str.to_string();
                 LocalFree(Some(HLOCAL(sid_str.0.cast())));
-                return Ok(ssid);
+                return Ok(ssid?);
             }
         }
         error!("Logon SID not found");
