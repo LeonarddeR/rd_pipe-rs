@@ -329,10 +329,30 @@ mod tests {
 
         for (cmd, expect_c, expect_r, expect_x, expect_m) in test_cmds {
             let cmd_lower = cmd.to_lowercase();
-            assert_eq!(cmd_lower.contains(CMD_COM_SERVER), expect_c, "Failed for '{}'", cmd);
-            assert_eq!(cmd_lower.contains(CMD_MSTS), expect_r, "Failed for '{}'", cmd);
-            assert_eq!(cmd_lower.contains(CMD_CITRIX), expect_x, "Failed for '{}'", cmd);
-            assert_eq!(cmd_lower.contains(CMD_LOCAL_MACHINE), expect_m, "Failed for '{}'", cmd);
+            assert_eq!(
+                cmd_lower.contains(CMD_COM_SERVER),
+                expect_c,
+                "Failed for '{}'",
+                cmd
+            );
+            assert_eq!(
+                cmd_lower.contains(CMD_MSTS),
+                expect_r,
+                "Failed for '{}'",
+                cmd
+            );
+            assert_eq!(
+                cmd_lower.contains(CMD_CITRIX),
+                expect_x,
+                "Failed for '{}'",
+                cmd
+            );
+            assert_eq!(
+                cmd_lower.contains(CMD_LOCAL_MACHINE),
+                expect_m,
+                "Failed for '{}'",
+                cmd
+            );
         }
     }
 }

@@ -434,7 +434,7 @@ mod tests {
     fn test_reg_path_format() {
         // Verify registry path format
         assert!(REG_PATH.contains("Software\\Classes\\CLSID"));
-        assert!(REG_PATH.contains(&format!("{:?}", CLSID_RD_PIPE_PLUGIN)));
+        assert!(REG_PATH.contains(&format!("{:?}", crate::registry::CLSID_RD_PIPE_PLUGIN)));
     }
 
     #[test]
@@ -446,9 +446,12 @@ mod tests {
     #[test]
     fn test_rd_pipe_plugin_default() {
         // Test that default implementation works
-        let plugin = RdPipePlugin::default();
+        let plugin = RdPipePlugin;
         // Just verify it can be constructed
-        assert_eq!(std::mem::size_of_val(&plugin), std::mem::size_of::<RdPipePlugin>());
+        assert_eq!(
+            std::mem::size_of_val(&plugin),
+            std::mem::size_of::<RdPipePlugin>()
+        );
     }
 
     #[test]
@@ -456,7 +459,10 @@ mod tests {
         // Test that new implementation works
         let plugin = RdPipePlugin::new();
         // Verify it can be constructed
-        assert_eq!(std::mem::size_of_val(&plugin), std::mem::size_of::<RdPipePlugin>());
+        assert_eq!(
+            std::mem::size_of_val(&plugin),
+            std::mem::size_of::<RdPipePlugin>()
+        );
     }
 
     #[test]
@@ -464,12 +470,7 @@ mod tests {
         // Test pipe name generation logic
         let channel_name = "testchannel";
         let channel_addr = 12345_usize;
-        let addr = format!(
-            "{}_{}_{}",
-            PIPE_NAME_PREFIX,
-            channel_name,
-            channel_addr
-        );
+        let addr = format!("{}_{}_{}", PIPE_NAME_PREFIX, channel_name, channel_addr);
 
         assert!(addr.starts_with(PIPE_NAME_PREFIX));
         assert!(addr.contains(channel_name));

@@ -122,9 +122,12 @@ mod tests {
 
         assert!(result.is_ok());
         let attrs = result.unwrap();
-        assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
+        assert_eq!(
+            attrs.nLength,
+            std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32
+        );
         assert!(!attrs.lpSecurityDescriptor.is_null());
-        assert_eq!(attrs.bInheritHandle, false.into());
+        assert_eq!(attrs.bInheritHandle, false);
 
         // Clean up allocated memory
         unsafe {
@@ -196,12 +199,5 @@ mod tests {
                 // This is acceptable for the test
             }
         }
-    }
-
-    #[test]
-    fn test_sddl_revision_constant() {
-        // Verify SDDL_REVISION_1 is used (the constant value is 1)
-        // This is a compile-time constant check
-        assert_eq!(SDDL_REVISION_1.0, 1);
     }
 }

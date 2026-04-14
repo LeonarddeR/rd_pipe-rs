@@ -101,7 +101,7 @@ mod tests {
     fn test_lock_server_always_succeeds() {
         // LockServer should always return Ok
         let factory = ClassFactory;
-        let factory_impl = ClassFactory_Impl {};
+        let factory_impl = factory.into_outer();
 
         // Test both lock and unlock
         assert!(factory_impl.LockServer(true.into()).is_ok());
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_class_factory_impl_debug() {
         // Test that ClassFactory_Impl Debug is properly implemented
-        let factory_impl = ClassFactory_Impl {};
+        let factory_impl = ClassFactory.into_outer();
         let debug_str = format!("{:?}", factory_impl);
         assert!(debug_str.contains("ClassFactory_Impl"));
     }
