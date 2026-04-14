@@ -33,6 +33,15 @@ jobs:
   test:
     name: Test
     runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: i686-pc-windows-msvc
+          - target: x86_64-pc-windows-msvc
+          - target: aarch64-pc-windows-msvc
+          - target: arm64ec-pc-windows-msvc
+
     steps:
       - uses: actions/checkout@v6
 
@@ -40,7 +49,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          target: x86_64-pc-windows-msvc
+          target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
