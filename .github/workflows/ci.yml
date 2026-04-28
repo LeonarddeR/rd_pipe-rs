@@ -35,15 +35,19 @@ jobs:
 
   test:
     name: Test
-    runs-on: windows-2025
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: i686-pc-windows-msvc
+            runner: windows-2025
           - target: x86_64-pc-windows-msvc
+            runner: windows-2025
           - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
           - target: arm64ec-pc-windows-msvc
+            runner: windows-11-arm
 
     steps:
       - uses: actions/checkout@v6
@@ -57,7 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test  --target ${{ matrix.target }}
+        run: cargo test --target ${{ matrix.target }}
 
   build:
     name: Build
