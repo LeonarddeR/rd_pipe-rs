@@ -13,8 +13,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use core::slice;
-use itertools::Itertools;
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::fmt;
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
@@ -119,7 +119,7 @@ impl IWTSPlugin_Impl for RdPipePlugin_Impl {
             error!("No channels in registry");
             return Err(Error::from(E_UNEXPECTED));
         }
-        for channel_name in channels.into_iter().unique() {
+        for channel_name in channels.into_iter().collect::<HashSet<_>>() {
             self.create_listener(channel_mgr, channel_name)?;
         }
         Ok(())
