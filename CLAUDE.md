@@ -10,7 +10,7 @@ The DLL is loaded into the RDP/Citrix client process and registered as an in-pro
 
 ## Build & Test
 
-Windows + MSVC toolchain required. Cross-platform builds fail (`windows-future` / `windows-core` incompat).
+Windows + MSVC toolchain required. Cross-platform builds fail (`windows-core` is Windows-only).
 
 ```
 cargo build                                        # debug
