@@ -23,7 +23,7 @@ param(
     [Parameter(Mandatory)] [string] $Arm64Lib,
     [Parameter(Mandatory)] [string] $Arm64ecLib,
     [Parameter(Mandatory)] [string] $OutDir,
-    [ValidateSet('lld-link', 'link')] [string] $Linker = 'lld-link'
+    [string] $Linker = 'lld-link'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,7 +40,17 @@ function Resolve-Tool {
 # Final link can be either MSVC link.exe or LLVM lld-link. Both
 # synthesize the ARM64X dynamic value table when given /machine:arm64x
 # and a matched pair of /defArm64Native + /def export descriptions.
-$linkExe = Resolve-Tool -Names @($Linker)
+# NOTE: lld-link must be >= 22.x. The Visual Studio Clang component
+# currently ships LLD 20.1.8, which fails with
+# `undefined symbol: __volatile_metadata` against the MSVC ARM64EC
+# CRT. Use the lld-link from a rustc toolchain (rust-lld 22.x) or a
+# standalone LLVM 22+ install. $Linker may be a tool name (resolved on
+# PATH) or an absolute path.
+if (Test-Path -LiteralPath $Linker) {
+    $linkExe = (Resolve-Path -LiteralPath $Linker).Path
+} else {
+    $linkExe = Resolve-Tool -Names @($Linker)
+}
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 # Same DEF used for ARM64 native and ARM64EC views; both export the same
