@@ -33,23 +33,20 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 # COM entry points.
 $def = Join-Path $PSScriptRoot 'rd_pipe.def'
 
-# Windows SDK import libs needed by both Rust halves (kernel32, advapi32,
-# bcrypt, ntdll, oleaut32, userenv, ws2_32) plus the C runtime stubs the
-# ARM64EC half pulls in (msvcrt, vcruntime).
+# Minimum Windows SDK / CRT import libs needed for the link to succeed.
+# Determined empirically by drop-one probing against rust-lld 22.1.2:
+# - kernel32.lib  : __chkstk, _tls_index/_tls_used, baseline Win32
+# - msvcrt.lib    : _CxxThrowException, __CxxFrameHandler3 (ARM64EC)
+# - ucrt.lib      : memcpy/memset/memmove/memcmp, wcslen, etc.
+# - vcruntime.lib : softintrin / icall helpers (ARM64EC)
+# All other Win32 imports (advapi32, bcrypt, ntdll, ole32, oleaut32,
+# userenv, ws2_32, synchronization) are pulled in transitively via the
+# Rust staticlibs' raw_dylib stubs.
 $sdkLibs = @(
     'kernel32.lib',
-    'advapi32.lib',
-    'bcrypt.lib',
-    'ntdll.lib',
-    'ole32.lib',
-    'oleaut32.lib',
-    'userenv.lib',
-    'ws2_32.lib',
-    'synchronization.lib',
     'msvcrt.lib',
     'ucrt.lib',
-    'vcruntime.lib',
-    'softintrin.lib'
+    'vcruntime.lib'
 )
 
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
