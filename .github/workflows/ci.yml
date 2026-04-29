@@ -127,33 +127,18 @@ jobs:
         with:
           arch: amd64_arm64
 
-      - name: Install Rust (for rust-lld 22.x)
+      - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          target: aarch64-pc-windows-msvc
 
-      - name: Resolve rust-lld path
-        id: rustlld
-        shell: pwsh
-        run: |
-          $sysroot = (& rustc --print sysroot).Trim()
-          $lld = Join-Path $sysroot 'lib\rustlib\aarch64-pc-windows-msvc\bin\gcc-ld\lld-link.exe'
-          if (-not (Test-Path $lld)) {
-            $lld = Join-Path $sysroot 'lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe'
-          }
-          if (-not (Test-Path $lld)) { throw "rust-lld not found under $sysroot" }
-          & $lld --version
-          "linker=$lld" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Build merged ARM64X DLL (rust-lld)
+      - name: Build merged ARM64X DLL
         shell: pwsh
         run: |
           ./arm64x/build_merged.ps1 `
             -Arm64Lib   artifacts/arm64/rd_pipe.lib `
             -Arm64ecLib artifacts/arm64ec/rd_pipe.lib `
-            -OutDir     artifacts/arm64x `
-            -Linker     '${{ steps.rustlld.outputs.linker }}'
+            -OutDir     artifacts/arm64x
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

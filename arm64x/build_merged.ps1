@@ -4,52 +4,28 @@
 #   -Arm64Lib   : path to target\aarch64-pc-windows-msvc\release\rd_pipe.lib
 #   -Arm64ecLib : path to target\arm64ec-pc-windows-msvc\release\rd_pipe.lib
 #   -OutDir     : directory to place the merged rd_pipe.dll
-#   -Linker     : 'lld-link' (default) or 'link'. lld-link ships with the
-#                 MSVC Clang component; link.exe ships with MSVC.
 #
-# Final link uses /MACHINE:ARM64X. Explicit Windows SDK import libs are
-# passed because Rust staticlibs do not embed them; they reference SDK
-# symbols via raw_dylib stubs that the ARM64X linker cannot resolve
-# without proper import libraries.
-#
-# NOTE: tracking https://github.com/rust-lang/rust/issues/145154 -- on
-# rustc with LLVM <22.1.0, the resulting ARM64X DLL still crashes inside
-# x64/ARM64EC processes (works fine inside ARM64 processes). The output
-# of this script is therefore only fully usable once a rustc with
-# LLVM >=22.1.0 ships.
+# Final link uses /MACHINE:ARM64X via rust-lld from the active rustc
+# toolchain. Explicit Windows SDK import libs are passed because Rust
+# staticlibs do not embed them; they reference SDK symbols via
+# raw_dylib stubs that the ARM64X linker cannot resolve without proper
+# import libraries.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Arm64Lib,
     [Parameter(Mandatory)] [string] $Arm64ecLib,
-    [Parameter(Mandatory)] [string] $OutDir,
-    [string] $Linker = 'lld-link'
+    [Parameter(Mandatory)] [string] $OutDir
 )
 
 $ErrorActionPreference = 'Stop'
 
-function Resolve-Tool {
-    param([string[]]$Names)
-    foreach ($n in $Names) {
-        $cmd = Get-Command $n -ErrorAction SilentlyContinue
-        if ($cmd) { return $cmd.Source }
-    }
-    throw "could not locate any of: $($Names -join ', ')"
-}
-
-# Final link can be either MSVC link.exe or LLVM lld-link. Both
-# synthesize the ARM64X dynamic value table when given /machine:arm64x
-# and a matched pair of /defArm64Native + /def export descriptions.
-# NOTE: lld-link must be >= 22.x. The Visual Studio Clang component
-# currently ships LLD 20.1.8, which fails with
-# `undefined symbol: __volatile_metadata` against the MSVC ARM64EC
-# CRT. Use the lld-link from a rustc toolchain (rust-lld 22.x) or a
-# standalone LLVM 22+ install. $Linker may be a tool name (resolved on
-# PATH) or an absolute path.
-if (Test-Path -LiteralPath $Linker) {
-    $linkExe = (Resolve-Path -LiteralPath $Linker).Path
-} else {
-    $linkExe = Resolve-Tool -Names @($Linker)
+# Resolve rust-lld bundled with the active rustc toolchain.
+$sysroot = (& rustc --print sysroot).Trim()
+$hostTriple = (& rustc -vV | Select-String '^host:').ToString().Split(' ', 2)[1].Trim()
+$linkExe = Join-Path $sysroot "lib\rustlib\$hostTriple\bin\gcc-ld\lld-link.exe"
+if (-not (Test-Path -LiteralPath $linkExe)) {
+    throw "rust-lld not found at $linkExe"
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -78,7 +54,7 @@ $sdkLibs = @(
 
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
 
-Write-Host "==> Linking ARM64X merged DLL with $Linker"
+Write-Host "==> Linking ARM64X merged DLL with $linkExe"
 # /entry:DllMain ensures the loader calls our Rust DllMain rather than the
 # msvcrt stub (msvcrt provides a no-op _DllMainCRTStartup; we want our own).
 # /force:multiple resolves the resulting duplicate-symbol diagnostic in
@@ -96,7 +72,7 @@ Write-Host "==> Linking ARM64X merged DLL with $Linker"
     "/out:$outDll" `
     $Arm64Lib $Arm64ecLib `
     @sdkLibs
-if ($LASTEXITCODE -ne 0) { throw "$Linker failed" }
+if ($LASTEXITCODE -ne 0) { throw "rust-lld failed" }
 
 Write-Host "==> Merged ARM64X DLL built: $outDll"
 Get-Item $outDll | Format-List FullName, Length, LastWriteTime
