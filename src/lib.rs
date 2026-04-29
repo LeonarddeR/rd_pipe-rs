@@ -94,7 +94,8 @@ pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_vo
                 error!("{:?}", info);
             }));
             trace!(
-                "DllMain: DLL_PROCESS_ATTACH, logging at level {}",
+                "DllMain: DLL_PROCESS_ATTACH, arch {}, logging at level {}",
+                std::env::consts::ARCH,
                 log_level
             );
             match unsafe { DisableThreadLibraryCalls(hinst) } {

@@ -102,3 +102,42 @@ jobs:
             ./target/${{ matrix.target }}/release/*.dll*
             ./target/${{ matrix.target }}/release/*.lib
             ./target/${{ matrix.target }}/release/*.pdb
+
+  build-arm64x:
+    name: Build ARM64X merged DLL
+    needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download ARM64 artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: rd_pipe-arm64
+          path: artifacts/arm64
+
+      - name: Download ARM64EC artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: rd_pipe-arm64ec
+          path: artifacts/arm64ec
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Build merged ARM64X DLL
+        shell: pwsh
+        run: |
+          ./arm64x/build_merged.ps1 `
+            -Arm64Lib   artifacts/arm64/rd_pipe.lib `
+            -Arm64ecLib artifacts/arm64ec/rd_pipe.lib `
+            -OutDir     artifacts/arm64x
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rd_pipe-arm64x
+          compression-level: 9
+          path: artifacts/arm64x/rd_pipe.dll
