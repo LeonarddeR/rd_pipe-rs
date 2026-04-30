@@ -185,6 +185,7 @@ pub struct FakeVirtualChannel {
 }
 
 impl FakeVirtualChannel {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> (IWTSVirtualChannel, Arc<FakeChannelState>) {
         let state = Arc::new(FakeChannelState::default());
         let iface: IWTSVirtualChannel = FakeVirtualChannel {
@@ -251,6 +252,7 @@ pub struct FakeChannelMgr {
 }
 
 impl FakeChannelMgr {
+    #[allow(clippy::new_ret_no_self, clippy::arc_with_non_send_sync)]
     pub fn new() -> (IWTSVirtualChannelManager, Arc<FakeMgrState>) {
         let state = Arc::new(FakeMgrState::default());
         let iface: IWTSVirtualChannelManager = FakeChannelMgr {

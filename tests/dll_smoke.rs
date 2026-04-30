@@ -113,8 +113,6 @@ fn hkcu_override_smoke() {
     drop(guard);
 }
 
-use windows::Win32::System::RemoteDesktop::IWTSVirtualChannel;
-
 #[test]
 fn fake_virtual_channel_records_writes() {
     let (chan, state) = common::FakeVirtualChannel::new();

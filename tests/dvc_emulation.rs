@@ -48,7 +48,6 @@ fn initialize_creates_listeners_per_channel() {
     assert_eq!(names.len(), 1, "unexpected extra channel names: {names:?}");
 
     drop(plugin);
-    drop(dll);
 }
 
 /// Get the first listener callback with the given channel name from mgr state.
@@ -96,7 +95,6 @@ fn new_channel_connection_opens_named_pipe() {
         chan_cb.OnClose().expect("OnClose");
     }
     drop(plugin);
-    drop(dll);
 }
 
 #[test]
@@ -157,7 +155,6 @@ fn channel_to_pipe_round_trip() {
         chan_cb.OnClose().expect("OnClose");
     }
     drop(plugin);
-    drop(dll);
 }
 
 #[test]
@@ -215,7 +212,6 @@ fn pipe_close_writes_xoff_to_channel() {
         chan_cb.OnClose().expect("OnClose");
     }
     drop(plugin);
-    drop(dll);
 }
 
 #[test]
@@ -262,7 +258,7 @@ fn pipe_to_channel_round_trip() {
         loop {
             let flat = chan_state.flat_writes();
             // flat[0] is XON; rest should accumulate "hello".
-            if flat.len() >= 1 + b"hello".len() {
+            if flat.len() > b"hello".len() {
                 assert_eq!(&flat[1..1 + b"hello".len()], b"hello");
                 break;
             }
@@ -277,7 +273,6 @@ fn pipe_to_channel_round_trip() {
         chan_cb.OnClose().expect("OnClose");
     }
     drop(plugin);
-    drop(dll);
 }
 #[test]
 #[serial]
@@ -306,7 +301,6 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
     }
 
     drop(plugin);
-    drop(dll);
 }
 
 #[test]
@@ -354,7 +348,6 @@ fn on_close_releases_pipe_writer() {
     });
 
     drop(plugin);
-    drop(dll);
 }
 
 #[test]
@@ -388,5 +381,4 @@ fn multiple_channels_produce_multiple_listeners() {
     assert_eq!(names, expected, "unexpected listener names: {names:?}");
 
     drop(plugin);
-    drop(dll);
 }
