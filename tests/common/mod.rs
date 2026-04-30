@@ -277,3 +277,60 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl
         Ok(FakeListener.into())
     }
 }
+
+use libloading::Library;
+use windows::Win32::System::Com::IClassFactory;
+use windows::Win32::System::RemoteDesktop::IWTSPlugin;
+use windows::core::{GUID, HRESULT, Interface};
+use windows_core::{OutRef, Ref};
+
+pub const CLSID_RD_PIPE_PLUGIN: GUID =
+    GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
+
+pub type DllGetClassObjectFn = unsafe extern "system" fn(
+    rclsid: Ref<GUID>,
+    riid: Ref<GUID>,
+    ppv: OutRef<IClassFactory>,
+) -> HRESULT;
+
+/// Owns the loaded `rd_pipe.dll`. Library is leaked into a `'static`
+/// so that `Symbol<'static, _>` is valid; process exit cleans up.
+pub struct DllHandle {
+    pub get_class_object: libloading::Symbol<'static, DllGetClassObjectFn>,
+    // Keep alive to prevent unload; never actually dropped cleanly.
+    _lib: &'static Library,
+}
+
+impl DllHandle {
+    pub fn load() -> Self {
+        let path = dll_path();
+        let lib = unsafe { Library::new(&path) }
+            .unwrap_or_else(|e| panic!("LoadLibrary {path:?} failed: {e}"));
+        let lib: &'static Library = Box::leak(Box::new(lib));
+        let get_class_object: libloading::Symbol<'static, DllGetClassObjectFn> =
+            unsafe { lib.get(b"DllGetClassObject\0") }
+                .expect("DllGetClassObject export missing");
+        Self { get_class_object, _lib: lib }
+    }
+}
+
+/// Calls `DllGetClassObject` → `IClassFactory`, then `CreateInstance` →
+/// `IWTSPlugin`.
+pub fn create_plugin(dll: &DllHandle) -> IWTSPlugin {
+    let mut factory: Option<IClassFactory> = None;
+    let hr = unsafe {
+        (dll.get_class_object)(
+            Ref::from(&CLSID_RD_PIPE_PLUGIN),
+            Ref::from(&IClassFactory::IID),
+            OutRef::from(&mut factory),
+        )
+    };
+    assert!(hr.is_ok(), "DllGetClassObject returned {hr:?}");
+    let factory = factory.expect("factory is None after DllGetClassObject");
+
+    unsafe {
+        factory
+            .CreateInstance::<Option<&windows_core::IUnknown>, IWTSPlugin>(None)
+            .expect("CreateInstance(IWTSPlugin) failed")
+    }
+}
