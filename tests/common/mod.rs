@@ -147,3 +147,61 @@ impl Drop for HkcuOverride {
         }
     }
 }
+
+use parking_lot::Mutex;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use windows::Win32::System::RemoteDesktop::IWTSVirtualChannel;
+use windows::core::implement;
+
+/// Shared state exposed to the test for assertion after plugin calls.
+#[derive(Default)]
+pub struct FakeChannelState {
+    pub writes: Mutex<Vec<Vec<u8>>>,
+    pub closed: AtomicBool,
+}
+
+impl FakeChannelState {
+    pub fn snapshot_writes(&self) -> Vec<Vec<u8>> {
+        self.writes.lock().clone()
+    }
+
+    pub fn flat_writes(&self) -> Vec<u8> {
+        self.writes.lock().iter().flatten().copied().collect()
+    }
+}
+
+/// Fake `IWTSVirtualChannel` that captures every `Write` payload and
+/// records `Close` — no real RDS session involved.
+#[implement(IWTSVirtualChannel)]
+pub struct FakeVirtualChannel {
+    pub state: Arc<FakeChannelState>,
+}
+
+impl FakeVirtualChannel {
+    pub fn new() -> (IWTSVirtualChannel, Arc<FakeChannelState>) {
+        let state = Arc::new(FakeChannelState::default());
+        let iface: IWTSVirtualChannel = FakeVirtualChannel { state: state.clone() }.into();
+        (iface, state)
+    }
+}
+
+impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl
+    for FakeVirtualChannel_Impl
+{
+    fn Write(
+        &self,
+        cbsize: u32,
+        pbuffer: *const u8,
+        _preserved: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        let buf = unsafe { std::slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
+        self.state.writes.lock().push(buf);
+        Ok(())
+    }
+
+    fn Close(&self) -> windows_core::Result<()> {
+        self.state.closed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}

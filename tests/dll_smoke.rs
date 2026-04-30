@@ -100,3 +100,15 @@ fn hkcu_override_smoke() {
     guard.write_channel_names(&["smoke"]).expect("write channel names");
     drop(guard);
 }
+
+use windows::Win32::System::RemoteDesktop::IWTSVirtualChannel;
+
+#[test]
+fn fake_virtual_channel_records_writes() {
+    let (chan, state) = common::FakeVirtualChannel::new();
+    let payload = b"abc";
+    unsafe {
+        chan.Write(payload, None).unwrap();
+    }
+    assert_eq!(state.flat_writes(), b"abc");
+}
