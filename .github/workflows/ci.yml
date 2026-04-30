@@ -93,6 +93,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-edit
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: cargo set-version "${GITHUB_REF_NAME#v}"
+
       - name: Build target
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -149,3 +160,43 @@ jobs:
           name: rd_pipe-arm64x
           compression-level: 9
           path: artifacts/arm64x/rd_pipe.dll
+
+  release:
+    name: Release
+    needs: [build, build-arm64x]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Assemble release tree
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for suffix in x86 x64 arm64 arm64ec arm64x; do
+            src="artifacts/rd_pipe-${suffix}"
+            if [ ! -d "$src" ]; then
+              echo "Missing artifact: $src" >&2
+              exit 1
+            fi
+            mv "$src" "release/${suffix}"
+          done
+          ls -R release
+
+      - name: Create combined zip
+        run: |
+          cd release
+          zip -r -9 "../rd_pipe-${GITHUB_REF_NAME}.zip" .
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rd_pipe-*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          name: ${{ github.ref_name }}
