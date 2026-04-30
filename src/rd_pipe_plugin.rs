@@ -115,11 +115,12 @@ impl IWTSPlugin_Impl for RdPipePlugin_Impl {
         channels.extend(
             RdPipePlugin::get_channel_names_from_registry(LOCAL_MACHINE).unwrap_or_default(),
         );
+        let channels: HashSet<String> = channels.into_iter().filter(|s| !s.is_empty()).collect();
         if channels.is_empty() {
             error!("No channels in registry");
             return Err(Error::from(E_UNEXPECTED));
         }
-        for channel_name in channels.into_iter().collect::<HashSet<_>>() {
+        for channel_name in channels {
             self.create_listener(channel_mgr, channel_name)?;
         }
         Ok(())
