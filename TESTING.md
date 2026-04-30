@@ -91,6 +91,17 @@ The tests **will work correctly** on Windows with proper Visual Studio toolchain
 cargo test
 ```
 
+CI uses [`cargo-nextest`](https://nexte.st/) for structured JUnit output and
+parallel execution. To match CI locally:
+
+```bash
+cargo install cargo-nextest --locked
+cargo build --target x86_64-pc-windows-msvc
+cargo nextest run --target x86_64-pc-windows-msvc --profile ci
+```
+
+This emits `target/nextest/ci/junit.xml` consumed by the CI report step.
+
 ### Run Tests for Specific Module
 ```bash
 cargo test --lib registry
@@ -188,11 +199,15 @@ mod tests {
 
 ## CI/CD Integration
 
-The CI pipeline now includes a dedicated test job that:
-1. Runs on Windows Server 2025
-2. Uses x86_64-pc-windows-msvc target
-3. Executes all unit tests
-4. Fails the build if any tests fail
+The CI pipeline runs tests across all four Windows MSVC targets
+(`i686`, `x86_64`, `aarch64`, `arm64ec`) using `cargo-nextest` with the
+`ci` profile defined in `.config/nextest.toml`. JUnit XML output is
+consumed by `mikepenz/action-junit-report@v5`, which:
+
+1. Publishes a per-target check run named `Tests (<target>)`.
+2. Annotates failing tests inline on the PR diff (file + line).
+3. Writes a detailed pass/fail summary table to the workflow run's
+   Summary tab via `$GITHUB_STEP_SUMMARY`.
 
 Tests run automatically on:
 - Pull requests to master branch
