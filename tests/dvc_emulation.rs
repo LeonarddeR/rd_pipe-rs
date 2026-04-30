@@ -407,3 +407,62 @@ fn multiple_channels_produce_multiple_listeners() {
 
     drop(plugin);
 }
+
+/// Regression test for issue #57: `OnClose` must terminate the reader task
+/// while the client is still connected and any subsequent `OnDataReceived`
+/// must fail with `ERROR_PIPE_NOT_CONNECTED`. Shutdown is driven cooperatively
+/// via `CancellationToken` + `tokio::select!`, with `OnClose` synchronously
+/// dropping the write half so this assertion holds without polling.
+#[test]
+#[serial]
+fn on_close_terminates_reader_cooperatively_while_client_connected() {
+    let hkcu = common::HkcuOverride::new().expect("override hkcu");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(dll);
+
+    let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
+
+    let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+    let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
+    let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+    let addr = common::channel_addr(&channel_iface);
+
+    common::block_on(async {
+        let _client =
+            common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+                .await;
+
+        // Wait for XON, confirming the pipe connection handshake completed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            !chan_state.snapshot_writes().is_empty(),
+            "timed out waiting for XON"
+        );
+
+        // Cooperative shutdown: OnClose while the client is still connected.
+        unsafe { chan_cb.OnClose().expect("OnClose") };
+
+        // Subsequent OnDataReceived must fail with ERROR_PIPE_NOT_CONNECTED
+        // (writer released synchronously by OnClose).
+        let r = unsafe { chan_cb.OnDataReceived(b"\xab") };
+        assert!(
+            matches!(
+                r,
+                Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+            ),
+            "expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {:?}",
+            r
+        );
+    });
+
+    drop(plugin);
+}

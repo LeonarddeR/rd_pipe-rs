@@ -71,8 +71,13 @@ features = [
     "net",
     "parking_lot",
     "io-util",
-    "time"
+    "time",
+    "macros",
 ]
+
+[dependencies.tokio-util]
+version = "0.7"
+default-features = false
 
 [dev-dependencies]
 libloading = "0.8"

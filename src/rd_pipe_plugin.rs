@@ -20,9 +20,9 @@ use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    task::JoinHandle,
     time::{Duration, sleep},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
@@ -200,7 +200,7 @@ const MSG_XOFF: u8 = 0x13;
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-    join_handle: JoinHandle<()>,
+    shutdown: CancellationToken,
 }
 
 impl RdPipeChannelCallback {
@@ -214,11 +214,14 @@ impl RdPipeChannelCallback {
         );
         let channel_agile = AgileReference::new(channel)?;
         let pipe_writer = Arc::new(Mutex::new(None));
+        let shutdown = CancellationToken::new();
         debug!("Constructing the callback");
 
+        Self::process_pipe(pipe_writer.clone(), channel_agile, addr, shutdown.clone());
+
         Ok(Self {
-            pipe_writer: pipe_writer.clone(),
-            join_handle: Self::process_pipe(pipe_writer, channel_agile, addr),
+            pipe_writer,
+            shutdown,
         })
     }
 
@@ -227,7 +230,8 @@ impl RdPipeChannelCallback {
         writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: String,
-    ) -> JoinHandle<()> {
+        shutdown: CancellationToken,
+    ) {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
             let login_sid = match get_logon_sid() {
@@ -265,13 +269,28 @@ impl RdPipeChannelCallback {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Error while creating named pipe server: {}", e);
-                        sleep(Duration::from_millis(100)).await;
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => {
+                                trace!("Shutdown signalled during pipe-server creation retry");
+                                break;
+                            }
+                            _ = sleep(Duration::from_millis(100)) => {}
+                        }
                         continue;
                     }
                 };
                 first_pipe_instance = false;
                 trace!("Initiate connection to pipe client");
-                match server.connect().await {
+                let connect_res = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => {
+                        trace!("Shutdown signalled while awaiting pipe client connection");
+                        break;
+                    }
+                    res = server.connect() => res,
+                };
+                match connect_res {
                     Ok(_) => {
                         let channel = match channel_agile.resolve() {
                             Ok(channel) => channel,
@@ -297,7 +316,27 @@ impl RdPipeChannelCallback {
                 trace!("Pipe client connected. Initiating pipe_reader loop");
                 'reader: loop {
                     let mut buf = Vec::with_capacity(64 * 1024);
-                    match server_reader.read_buf(&mut buf).await {
+                    let read_res = tokio::select! {
+                        biased;
+                        _ = shutdown.cancelled() => {
+                            trace!("Shutdown signalled inside reader loop");
+                            match channel_agile.resolve() {
+                                Ok(channel) => match unsafe { channel.Write(&[MSG_XOFF], None) } {
+                                    Ok(_) => trace!("Wrote XOFF to channel on shutdown"),
+                                    Err(e) => error!("Error writing XOFF on shutdown: {}", e),
+                                },
+                                Err(e) => {
+                                    error!(
+                                        "Failed to resolve agile reference for channel on shutdown: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            break 'reader;
+                        }
+                        res = server_reader.read_buf(&mut buf) => res,
+                    };
+                    match read_res {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
                             let channel = match channel_agile.resolve() {
@@ -361,7 +400,7 @@ impl RdPipeChannelCallback {
                 }
                 trace!("Writer released");
             }
-        })
+        });
     }
 }
 
@@ -369,6 +408,7 @@ impl fmt::Debug for RdPipeChannelCallback_Impl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("RdPipeChannelCallback_Impl")
             .field("pipe_writer", &self.pipe_writer)
+            .field("shutdown_cancelled", &self.shutdown.is_cancelled())
             .finish()
     }
 }
@@ -398,13 +438,11 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
+        self.shutdown.cancel();
         let mut writer_guard = self.pipe_writer.lock();
         if let Some(ref mut writer) = *writer_guard {
             ASYNC_RUNTIME.block_on(writer.shutdown())?;
             *writer_guard = None;
-        }
-        if !self.join_handle.is_finished() {
-            self.join_handle.abort();
         }
         Ok(())
     }
