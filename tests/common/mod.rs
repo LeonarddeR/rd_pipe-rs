@@ -334,3 +334,41 @@ pub fn create_plugin(dll: &DllHandle) -> IWTSPlugin {
             .expect("CreateInstance(IWTSPlugin) failed")
     }
 }
+
+use std::time::{Duration, Instant};
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+/// Build the pipe path used by the plugin for a given channel name and
+/// channel COM interface address (matches `PIPE_NAME_PREFIX` in rd_pipe_plugin.rs).
+pub fn pipe_address(channel_name: &str, channel_addr: usize) -> String {
+    format!(r"\\.\pipe\RDPipe_{channel_name}_{channel_addr}")
+}
+
+/// Poll `pipe_address(name, addr)` every 25 ms until the pipe is connectable
+/// or `deadline` elapses. Returns the connected client.
+pub async fn connect_pipe_client(
+    channel_name: &str,
+    channel_addr: usize,
+    deadline: Duration,
+) -> NamedPipeClient {
+    let addr = pipe_address(channel_name, channel_addr);
+    let start = Instant::now();
+    loop {
+        match ClientOptions::new().open(&addr) {
+            Ok(client) => return client,
+            Err(_) if start.elapsed() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("pipe {addr} never accepted within {deadline:?}: {e}"),
+        }
+    }
+}
+
+/// Build a single-thread Tokio runtime, run `f` to completion, return the result.
+pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(f)
+}
