@@ -34,20 +34,37 @@ jobs:
         run: cargo fmt --all -- --check
 
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
+    needs: [build, build-arm64x]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: i686-pc-windows-msvc
+          - name: x86
+            target: i686-pc-windows-msvc
             runner: windows-2025
-          - target: x86_64-pc-windows-msvc
+            artifact: rd_pipe-x86
+          - name: x64
+            target: x86_64-pc-windows-msvc
             runner: windows-2025
-          - target: aarch64-pc-windows-msvc
+            artifact: rd_pipe-x64
+          - name: arm64
+            target: aarch64-pc-windows-msvc
             runner: windows-11-arm
-          - target: arm64ec-pc-windows-msvc
+            artifact: rd_pipe-arm64
+          - name: arm64ec
+            target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
+            artifact: rd_pipe-arm64ec
+          - name: arm64x-on-arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            artifact: rd_pipe-arm64x
+          - name: arm64x-on-arm64ec
+            target: arm64ec-pc-windows-msvc
+            runner: windows-11-arm
+            artifact: rd_pipe-arm64x
 
     steps:
       - uses: actions/checkout@v6
@@ -59,16 +76,23 @@ jobs:
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.name }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
-      - name: Build cdylib
-        run: cargo build --target ${{ matrix.target }}
+      - name: Download DLL artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: dll
 
       - name: Run tests
+        env:
+          RD_PIPE_DLL_PATH: ${{ github.workspace }}/dll/rd_pipe.dll
         run: cargo nextest run --target ${{ matrix.target }} --profile ci
 
       - name: Publish test report
@@ -76,7 +100,7 @@ jobs:
         if: always()
         with:
           report_paths: 'target/nextest/ci/junit.xml'
-          check_name: 'Tests (${{ matrix.target }})'
+          check_name: 'Tests (${{ matrix.name }})'
           detailed_summary: true
           include_passed: false
           annotate_only: false

@@ -102,6 +102,19 @@ cargo nextest run --target x86_64-pc-windows-msvc --profile ci
 
 This emits `target/nextest/ci/junit.xml` consumed by the CI report step.
 
+### Override the DLL path
+
+Integration tests load `rd_pipe.dll` via `libloading` at runtime. By default
+`tests/common/mod.rs::dll_path()` resolves the DLL from
+`target/<triple>/<profile>/rd_pipe.dll`. Set `RD_PIPE_DLL_PATH` to load a
+specific DLL — used by CI to run tests against the release artifact (or the
+merged ARM64X DLL):
+
+```powershell
+$env:RD_PIPE_DLL_PATH = "C:\path\to\rd_pipe.dll"
+cargo nextest run --target aarch64-pc-windows-msvc --profile ci
+```
+
 ### Run Tests for Specific Module
 ```bash
 cargo test --lib registry
@@ -199,12 +212,27 @@ mod tests {
 
 ## CI/CD Integration
 
-The CI pipeline runs tests across all four Windows MSVC targets
-(`i686`, `x86_64`, `aarch64`, `arm64ec`) using `cargo-nextest` with the
-`ci` profile defined in `.config/nextest.toml`. JUnit XML output is
-consumed by `mikepenz/action-junit-report@v5`, which:
+The CI pipeline runs tests in a single `test` job with six matrix entries
+covering all shipped binaries:
 
-1. Publishes a per-target check run named `Tests (<target>)`.
+| Name | Runner | Test target | DLL artifact |
+|------|--------|-------------|--------------|
+| `x86` | windows-2025 | i686-pc-windows-msvc | rd_pipe-x86 |
+| `x64` | windows-2025 | x86_64-pc-windows-msvc | rd_pipe-x64 |
+| `arm64` | windows-11-arm | aarch64-pc-windows-msvc | rd_pipe-arm64 |
+| `arm64ec` | windows-11-arm | arm64ec-pc-windows-msvc | rd_pipe-arm64ec |
+| `arm64x-on-arm64` | windows-11-arm | aarch64-pc-windows-msvc | rd_pipe-arm64x |
+| `arm64x-on-arm64ec` | windows-11-arm | arm64ec-pc-windows-msvc | rd_pipe-arm64x |
+
+The job depends on `build` and `build-arm64x`, downloads the release DLL
+artifact, and points tests at it via `RD_PIPE_DLL_PATH`. No cdylib build
+runs in the test job — the shipped release binary is what gets tested.
+
+Tests run via `cargo-nextest` with the `ci` profile defined in
+`.config/nextest.toml`. JUnit XML is consumed by
+`mikepenz/action-junit-report@v5`, which:
+
+1. Publishes a per-entry check run named `Tests (<name>)`.
 2. Annotates failing tests inline on the PR diff (file + line).
 3. Writes a detailed pass/fail summary table to the workflow run's
    Summary tab via `$GITHUB_STEP_SUMMARY`.
