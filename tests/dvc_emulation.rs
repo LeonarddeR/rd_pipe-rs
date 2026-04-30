@@ -410,9 +410,9 @@ fn multiple_channels_produce_multiple_listeners() {
 
 /// Regression test for issue #57: `OnClose` must terminate the reader task
 /// while the client is still connected and any subsequent `OnDataReceived`
-/// must fail with `ERROR_PIPE_NOT_CONNECTED`. Today the shutdown is driven
-/// by dropping the write half inside `OnClose`; after Task 4 it will also
-/// be driven cooperatively via `CancellationToken` + `tokio::select!`.
+/// must fail with `ERROR_PIPE_NOT_CONNECTED`. Shutdown is driven cooperatively
+/// via `CancellationToken` + `tokio::select!`, with `OnClose` synchronously
+/// dropping the write half so this assertion holds without polling.
 #[test]
 #[serial]
 fn on_close_terminates_reader_cooperatively_while_client_connected() {
