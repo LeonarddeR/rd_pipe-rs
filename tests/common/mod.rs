@@ -58,3 +58,92 @@ pub fn dll_path() -> PathBuf {
     // If nothing found, return the target-specific path (so Library::new error is informative)
     target_path
 }
+
+use std::io;
+use tempfile::NamedTempFile;
+use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegCloseKey, RegLoadAppKeyW, RegOverridePredefKey,
+};
+use windows::core::PCWSTR;
+
+/// RAII guard that:
+/// 1. Loads a private hive file via `RegLoadAppKeyW`.
+/// 2. Redirects `HKEY_CURRENT_USER` for this process to that hive via
+///    `RegOverridePredefKey`.
+/// 3. On drop: clears the override, closes the hive, deletes the file.
+///
+/// The live registry is never read or written.
+pub struct HkcuOverride {
+    hive: HKEY,
+    // Field order: hive closed first in Drop, then NamedTempFile drops and deletes the file.
+    _file: NamedTempFile,
+}
+
+impl HkcuOverride {
+    pub fn new() -> io::Result<Self> {
+        // Reserve a unique filename, then delete the file so RegLoadAppKey
+        // can create a hive at that path. NamedTempFile keeps the path
+        // reserved for cleanup-on-drop.
+        let temp = tempfile::Builder::new()
+            .prefix("rd_pipe_test_hive_")
+            .suffix(".dat")
+            .tempfile()?;
+        let path = temp.path().to_owned();
+        // Remove the empty file; RegLoadAppKey requires no file at the path.
+        std::fs::remove_file(&path)?;
+
+        let path_w: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut hive = HKEY::default();
+        let rc = unsafe {
+            RegLoadAppKeyW(PCWSTR(path_w.as_ptr()), &mut hive, KEY_ALL_ACCESS.0, 0, None)
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(rc.0 as i32));
+        }
+
+        let rc = unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, Some(hive)) };
+        if rc != ERROR_SUCCESS {
+            unsafe {
+                let _ = RegCloseKey(hive);
+            }
+            return Err(io::Error::from_raw_os_error(rc.0 as i32));
+        }
+
+        Ok(Self { hive, _file: temp })
+    }
+
+    /// Write `ChannelNames` (REG_MULTI_SZ) at the plugin's CLSID subkey
+    /// inside the redirected hive, using the `windows-registry` crate.
+    pub fn write_channel_names(&self, names: &[&str]) -> windows_core::Result<()> {
+        const SUBKEY: &str =
+            r"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}";
+        // Wrap the raw HKEY in a windows_registry::Key. Drop of `root` calls
+        // RegCloseKey on the duplicated handle — but Key::from_raw stores the
+        // handle by-value. To avoid double-close on `self.hive` at Drop,
+        // we forget `root` before returning.
+        let root = unsafe { windows_registry::Key::from_raw(self.hive.0 as _) };
+        let result = (|| -> windows_core::Result<()> {
+            let sub = root.create(SUBKEY)?;
+            sub.set_multi_string("ChannelNames", names)
+        })();
+        // Don't let `root` close `self.hive`.
+        std::mem::forget(root);
+        result
+    }
+}
+
+impl Drop for HkcuOverride {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RegOverridePredefKey(HKEY_CURRENT_USER, None);
+            let _ = RegCloseKey(self.hive);
+        }
+    }
+}

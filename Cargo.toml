@@ -88,3 +88,9 @@ features = [
     "io-util",
     "time",
 ]
+
+[dev-dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_System_Registry",
+]

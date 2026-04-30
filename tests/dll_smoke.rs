@@ -93,3 +93,10 @@ fn bad_iid_returns_e_unexpected() {
     assert_eq!(hr, E_UNEXPECTED, "expected E_UNEXPECTED, got {hr:?}");
     assert!(out.is_none(), "ppv should have been written to None on rejection");
 }
+
+#[test]
+fn hkcu_override_smoke() {
+    let guard = common::HkcuOverride::new().expect("override hkcu");
+    guard.write_channel_names(&["smoke"]).expect("write channel names");
+    drop(guard);
+}
