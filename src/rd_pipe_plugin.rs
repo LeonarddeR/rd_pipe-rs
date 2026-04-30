@@ -20,9 +20,9 @@ use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    task::JoinHandle,
     time::{Duration, sleep},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
@@ -200,7 +200,7 @@ const MSG_XOFF: u8 = 0x13;
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-    join_handle: JoinHandle<()>,
+    shutdown: CancellationToken,
 }
 
 impl RdPipeChannelCallback {
@@ -214,11 +214,14 @@ impl RdPipeChannelCallback {
         );
         let channel_agile = AgileReference::new(channel)?;
         let pipe_writer = Arc::new(Mutex::new(None));
+        let shutdown = CancellationToken::new();
         debug!("Constructing the callback");
 
+        Self::process_pipe(pipe_writer.clone(), channel_agile, addr, shutdown.clone());
+
         Ok(Self {
-            pipe_writer: pipe_writer.clone(),
-            join_handle: Self::process_pipe(pipe_writer, channel_agile, addr),
+            pipe_writer,
+            shutdown,
         })
     }
 
@@ -227,7 +230,9 @@ impl RdPipeChannelCallback {
         writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: String,
-    ) -> JoinHandle<()> {
+        // Task 4: rename to `shutdown` and capture in async block
+        _shutdown: CancellationToken,
+    ) {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
             let login_sid = match get_logon_sid() {
@@ -361,7 +366,7 @@ impl RdPipeChannelCallback {
                 }
                 trace!("Writer released");
             }
-        })
+        });
     }
 }
 
@@ -369,6 +374,7 @@ impl fmt::Debug for RdPipeChannelCallback_Impl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("RdPipeChannelCallback_Impl")
             .field("pipe_writer", &self.pipe_writer)
+            .field("shutdown_cancelled", &self.shutdown.is_cancelled())
             .finish()
     }
 }
@@ -398,13 +404,11 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 
     #[instrument]
     fn OnClose(&self) -> Result<()> {
+        self.shutdown.cancel();
         let mut writer_guard = self.pipe_writer.lock();
         if let Some(ref mut writer) = *writer_guard {
             ASYNC_RUNTIME.block_on(writer.shutdown())?;
             *writer_guard = None;
-        }
-        if !self.join_handle.is_finished() {
-            self.join_handle.abort();
         }
         Ok(())
     }
