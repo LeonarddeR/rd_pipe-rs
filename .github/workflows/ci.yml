@@ -60,6 +60,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build cdylib
+        run: cargo build --target ${{ matrix.target }}
+
       - name: Run tests
         run: cargo test --target ${{ matrix.target }}
 

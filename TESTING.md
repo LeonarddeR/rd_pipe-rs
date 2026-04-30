@@ -39,6 +39,36 @@ The project now includes comprehensive unit tests for the following modules:
 - **Interface IID tests**: Validate supported interface GUIDs (IUnknown, IWTSPlugin)
 - **Debug implementation tests**: Verify Debug trait is properly implemented
 
+### 6. Integration Tests (`tests/`)
+
+The `tests/` directory holds Cargo integration tests that load the built
+`rd_pipe.dll` artifact and emulate the RDS host side end-to-end. Two
+binaries:
+
+- **`tests/dll_smoke.rs`** — confirms DLL exports resolve and
+  `DllGetClassObject` rejects bad CLSID/IID with the expected HRESULTs.
+  Implicitly verifies `DllMain(DLL_PROCESS_ATTACH)` succeeded.
+- **`tests/dvc_emulation.rs`** — drives the full plugin lifecycle:
+  factory creation, `Initialize` against a fake `IWTSVirtualChannelManager`,
+  `OnNewChannelConnection`, named-pipe data round-trips in both directions,
+  XON/XOFF flow control, `OnClose` cleanup, and multi-channel listener
+  creation.
+
+A shared helper module `tests/common/mod.rs` provides:
+
+- `dll_path()` — locates the cdylib for the current target. Run `cargo build --target <triple>` before `cargo test --target <triple>`; `cargo test` does not build the cdylib for these integration tests because they load the DLL via `libloading` at runtime (no link dependency).
+- `HkcuOverride` — RAII guard that loads a private hive via
+  `RegLoadAppKey` and redirects `HKEY_CURRENT_USER` to it via
+  `RegOverridePredefKey`. The live registry is never read or written.
+- `FakeChannelMgr`, `FakeListener`, `FakeVirtualChannel` — minimal
+  `windows::core::implement` stubs for the host-side COM interfaces,
+  with `Mutex`-guarded event logs for assertions.
+- `connect_pipe_client`, `block_on`, `trigger_new_channel`,
+  `channel_addr`, `pipe_address` — pipe and lifecycle plumbing.
+
+Each `dvc_emulation` test is annotated `#[serial_test::serial]` because
+`RegOverridePredefKey` is a process-wide setting.
+
 ## Running Tests
 
 ### Known Build Issues
@@ -104,10 +134,15 @@ These are not easily testable in unit tests and require integration testing in a
 
 ## Areas Needing Additional Coverage
 
+### Now Covered
+1. **Integration Tests**: End-to-end tests via `tests/dll_smoke.rs` and `tests/dvc_emulation.rs`
+2. **Named Pipe Tests**: Pipe server creation and client communication exercised in scenarios 4–8
+3. **Channel Callback Tests**: Virtual channel data flow in scenarios 5–8
+
 ### High Priority
-1. **Integration Tests**: End-to-end tests with actual RDS connections
-2. **Named Pipe Tests**: Tests for pipe server creation and client communication
-3. **Channel Callback Tests**: Tests for virtual channel data flow
+1. **DllInstall registration paths** — would mutate live registry; live-environment only
+2. **Citrix module registration** — x86-only, no ARM host runner exercises it
+3. **Real RDS session lifecycle** — `Connected`/`Disconnected`/`Terminated` under load
 
 ### Medium Priority
 1. **Error Handling**: More comprehensive error path testing
@@ -173,7 +208,10 @@ Current test coverage by module:
 - `lib.rs`: 6 unit tests (constants, initialization, parsing)
 - `class_factory.rs`: 6 unit tests (construction, interfaces, Debug impl)
 
-**Total**: 32 unit tests covering core functionality
+**Total**: 32 unit tests + 14 integration tests covering core functionality and end-to-end COM/pipe lifecycle
+
+- `tests/dll_smoke.rs`: 5 integration tests (DLL load, exports, bad CLSID/IID, FakeVirtualChannel smoke, HkcuOverride smoke)
+- `tests/dvc_emulation.rs`: 9 integration tests (full plugin lifecycle scenarios)
 
 ## Future Improvements
 
