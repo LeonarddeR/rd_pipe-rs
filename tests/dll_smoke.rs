@@ -5,23 +5,26 @@ mod common;
 
 use libloading::Library;
 
-#[test]
-fn dll_loads_and_exports_present() {
+/// Load the DLL and leak it into a `'static` reference. Necessary because
+/// dropping a `Library` calls `FreeLibrary` -> `DllMain(DLL_PROCESS_DETACH)`,
+/// which races with tracing-subscriber TLS teardown and can abort the test
+/// process. Process exit reclaims the leak.
+fn load_dll_leaked() -> &'static Library {
     let path = common::dll_path();
     assert!(
         path.is_file(),
-        "rd_pipe.dll not found at {} — run `cargo test` (which builds the cdylib) instead of `cargo run`",
+        "rd_pipe.dll not found at {} — run `cargo build` first or `cargo test` (cargo test does NOT build the cdylib for integration tests that don't link to it)",
         path.display()
     );
-
-    // Library::new on Windows calls LoadLibraryW + DllMain(DLL_PROCESS_ATTACH).
-    // SAFETY: we control the DLL we are loading; it is the artifact this very
-    // test crate produced. Required-export resolution below confirms identity.
     let lib = unsafe { Library::new(&path) }.expect("LoadLibrary failed");
+    Box::leak(Box::new(lib))
+}
+
+#[test]
+fn dll_loads_and_exports_present() {
+    let lib = load_dll_leaked();
 
     // Resolve the three exports the COM in-proc server contract requires.
-    // Each `lib.get` is unsafe because the function-pointer signature is
-    // declared by the caller; we only verify presence here, not call them.
     unsafe {
         let _: libloading::Symbol<unsafe extern "system" fn()> =
             lib.get(b"DllMain\0").expect("DllMain export missing");
@@ -31,8 +34,6 @@ fn dll_loads_and_exports_present() {
         let _: libloading::Symbol<unsafe extern "system" fn()> =
             lib.get(b"DllInstall\0").expect("DllInstall export missing");
     }
-
-    // Library drops here -> FreeLibrary -> DllMain(DLL_PROCESS_DETACH).
 }
 
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED};
@@ -53,7 +54,7 @@ type DllGetClassObjectFn = unsafe extern "system" fn(
 
 #[test]
 fn bad_clsid_returns_class_e_classnotavailable() {
-    let lib = unsafe { Library::new(common::dll_path()) }.expect("load DLL");
+    let lib = load_dll_leaked();
     let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
         unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
 
@@ -81,7 +82,7 @@ fn bad_clsid_returns_class_e_classnotavailable() {
 
 #[test]
 fn bad_iid_returns_e_unexpected() {
-    let lib = unsafe { Library::new(common::dll_path()) }.expect("load DLL");
+    let lib = load_dll_leaked();
     let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
         unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
 
