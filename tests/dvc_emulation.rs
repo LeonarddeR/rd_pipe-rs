@@ -49,3 +49,33 @@ fn initialize_creates_listeners_per_channel() {
     drop(plugin);
     drop(dll);
 }
+
+#[test]
+#[serial]
+fn initialize_with_empty_channels_returns_e_unexpected() {
+    // Override HKCU but write NO ChannelNames.
+    // HKLM is not redirected; this test assumes the DLL is not registered
+    // in HKLM on the test machine (true in CI and fresh dev machines).
+    // If rd_pipe IS registered in HKLM, Initialize may succeed — in that
+    // case we accept Ok as well.
+    let _hkcu = common::HkcuOverride::new().expect("override hkcu");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(&dll);
+
+    let (mgr_iface, _state) = common::FakeChannelMgr::new();
+    let result = unsafe { plugin.Initialize(&mgr_iface) };
+    match result {
+        Err(e) => assert_eq!(
+            e.code(),
+            windows::Win32::Foundation::E_UNEXPECTED,
+            "expected E_UNEXPECTED, got {e:?}"
+        ),
+        Ok(()) => {
+            // HKLM has ChannelNames registered — acceptable on registered machines.
+        }
+    }
+
+    drop(plugin);
+    drop(dll);
+}
