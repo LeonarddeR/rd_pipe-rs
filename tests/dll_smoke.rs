@@ -33,3 +33,63 @@ fn dll_loads_and_exports_present() {
 
     // Library drops here -> FreeLibrary -> DllMain(DLL_PROCESS_DETACH).
 }
+
+use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED};
+use windows::Win32::System::Com::IClassFactory;
+use windows::core::{GUID, HRESULT, Interface};
+use windows_core::{OutRef, Ref};
+
+/// CLSID published by the production crate. Hard-coded here so the test does
+/// not depend on the crate's Rust API surface; the value is the same string
+/// used in `src/registry.rs`.
+const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
+
+type DllGetClassObjectFn = unsafe extern "system" fn(
+    rclsid: Ref<GUID>,
+    riid: Ref<GUID>,
+    ppv: OutRef<IClassFactory>,
+) -> HRESULT;
+
+#[test]
+fn bad_clsid_returns_class_e_classnotavailable() {
+    let lib = unsafe { Library::new(common::dll_path()) }.expect("load DLL");
+    let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
+        unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
+
+    // A CLSID we made up — guaranteed not to match the plugin's.
+    let bad_clsid = GUID::from_u128(0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128);
+    let mut out: Option<IClassFactory> = None;
+
+    let hr = unsafe {
+        get_class_object(
+            Ref::from(&bad_clsid),
+            Ref::from(&IClassFactory::IID),
+            OutRef::from(&mut out),
+        )
+    };
+
+    assert_eq!(hr, CLASS_E_CLASSNOTAVAILABLE, "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}");
+    assert!(out.is_none(), "ppv should have been written to None on rejection");
+}
+
+#[test]
+fn bad_iid_returns_e_unexpected() {
+    let lib = unsafe { Library::new(common::dll_path()) }.expect("load DLL");
+    let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
+        unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
+
+    // Correct CLSID, made-up IID — plugin must reject.
+    let bad_iid = GUID::from_u128(0xCAFEBABE_CAFE_BABE_CAFE_BABECAFEBABEu128);
+    let mut out: Option<IClassFactory> = None;
+
+    let hr = unsafe {
+        get_class_object(
+            Ref::from(&CLSID_RD_PIPE_PLUGIN),
+            Ref::from(&bad_iid),
+            OutRef::from(&mut out),
+        )
+    };
+
+    assert_eq!(hr, E_UNEXPECTED, "expected E_UNEXPECTED, got {hr:?}");
+    assert!(out.is_none(), "ppv should have been written to None on rejection");
+}
