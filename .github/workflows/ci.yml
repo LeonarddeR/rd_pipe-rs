@@ -60,11 +60,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Build cdylib
         run: cargo build --target ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo nextest run --target ${{ matrix.target }} --profile ci
+
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: 'target/nextest/ci/junit.xml'
+          check_name: 'Tests (${{ matrix.target }})'
+          detailed_summary: true
+          include_passed: false
+          annotate_only: false
+          require_tests: true
 
   build:
     name: Build

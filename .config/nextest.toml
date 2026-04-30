@@ -1,0 +1,12 @@
+# Nextest profile used by CI.
+# Emits JUnit XML at target/nextest/ci/junit.xml for action-junit-report.
+
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "rd_pipe"
+store-success-output = false
+store-failure-output = true
