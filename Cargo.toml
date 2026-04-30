@@ -73,3 +73,18 @@ features = [
     "io-util",
     "time"
 ]
+
+[dev-dependencies]
+libloading = "0.8"
+tempfile = "3"
+serial_test = "3"
+
+[dev-dependencies.tokio]
+version = "1.49"
+features = [
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "time",
+]
