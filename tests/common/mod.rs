@@ -205,3 +205,75 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl
         Ok(())
     }
 }
+
+use windows::Win32::System::RemoteDesktop::{
+    IWTSListener, IWTSListenerCallback, IWTSVirtualChannelManager,
+};
+
+/// Stub listener — the plugin never calls `GetConfiguration` in our tests,
+/// but the interface requires an impl.
+#[implement(IWTSListener)]
+pub struct FakeListener;
+
+impl windows::Win32::System::RemoteDesktop::IWTSListener_Impl for FakeListener_Impl {
+    fn GetConfiguration(
+        &self,
+    ) -> windows_core::Result<windows::Win32::System::Com::StructuredStorage::IPropertyBag> {
+        Err(windows_core::Error::from_hresult(windows::Win32::Foundation::E_NOTIMPL))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MgrEvent {
+    CreateListener { name: String },
+}
+
+#[derive(Default)]
+pub struct FakeMgrState {
+    pub events: Mutex<Vec<MgrEvent>>,
+    pub listeners: Mutex<Vec<(String, IWTSListenerCallback)>>,
+}
+
+/// Fake `IWTSVirtualChannelManager` that records `CreateListener` calls so
+/// tests can later retrieve the callbacks and drive `OnNewChannelConnection`.
+#[implement(IWTSVirtualChannelManager)]
+pub struct FakeChannelMgr {
+    pub state: Arc<FakeMgrState>,
+}
+
+impl FakeChannelMgr {
+    pub fn new() -> (IWTSVirtualChannelManager, Arc<FakeMgrState>) {
+        let state = Arc::new(FakeMgrState::default());
+        let iface: IWTSVirtualChannelManager = FakeChannelMgr { state: state.clone() }.into();
+        (iface, state)
+    }
+}
+
+impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl
+    for FakeChannelMgr_Impl
+{
+    fn CreateListener(
+        &self,
+        pszchannelname: &windows_core::PCSTR,
+        _uflags: u32,
+        plistenercallback: windows_core::Ref<IWTSListenerCallback>,
+    ) -> windows_core::Result<IWTSListener> {
+        let name = unsafe { pszchannelname.to_string() }.map_err(|_| {
+            windows_core::Error::from_hresult(windows::Win32::Foundation::E_UNEXPECTED)
+        })?;
+        let cb = plistenercallback
+            .as_ref()
+            .ok_or_else(|| {
+                windows_core::Error::from_hresult(windows::Win32::Foundation::E_UNEXPECTED)
+            })?
+            .clone();
+
+        self.state
+            .events
+            .lock()
+            .push(MgrEvent::CreateListener { name: name.clone() });
+        self.state.listeners.lock().push((name, cb));
+
+        Ok(FakeListener.into())
+    }
+}
