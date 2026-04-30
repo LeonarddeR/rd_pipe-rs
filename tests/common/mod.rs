@@ -9,7 +9,11 @@ use std::path::PathBuf;
 ///
 /// Honors `CARGO_TARGET_DIR` when set; falls back to `<manifest>/target`.
 /// Profile is derived from `cfg!(debug_assertions)`.
-/// Resolves to the DLL matching the compile-time target architecture.
+/// Resolves to the DLL matching the compile-time target triple.
+///
+/// `cargo test` does NOT build the cdylib for these integration tests
+/// (libloading uses it at runtime, no link dependency exists). Run
+/// `cargo build --target <triple>` before `cargo test --target <triple>`.
 pub fn dll_path() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -21,50 +25,54 @@ pub fn dll_path() -> PathBuf {
         "release"
     };
 
-    // Use compile-time cfg! to determine which target triple we need
-    #[cfg(target_arch = "x86_64")]
-    let target_triple = "x86_64-pc-windows-msvc";
-    #[cfg(target_arch = "aarch64")]
-    let target_triple = "aarch64-pc-windows-msvc";
-    #[cfg(target_arch = "arm64ec")]
-    let target_triple = "arm64ec-pc-windows-msvc";
-    #[cfg(target_arch = "x86")]
-    let target_triple = "i686-pc-windows-msvc";
+    // Compile-time target triple. Rust reports `target_arch = "arm64ec"` for
+    // arm64ec-pc-windows-msvc on supported toolchains.
+    let target_triple = if cfg!(target_arch = "arm64ec") {
+        "arm64ec-pc-windows-msvc"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-pc-windows-msvc"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(target_arch = "x86") {
+        "i686-pc-windows-msvc"
+    } else {
+        ""
+    };
 
-    // First, try the target-specific path
-    let target_path = target_dir
-        .join(target_triple)
-        .join(profile)
-        .join("rd_pipe.dll");
-    if target_path.is_file() {
-        return target_path;
+    if !target_triple.is_empty() {
+        let target_path = target_dir
+            .join(target_triple)
+            .join(profile)
+            .join("rd_pipe.dll");
+        if target_path.is_file() {
+            return target_path;
+        }
     }
 
-    // Fallback: try the default (host arch) path
+    // Fallback: try the default (host arch) path.
     let default_path = target_dir.join(profile).join("rd_pipe.dll");
     if default_path.is_file() {
         return default_path;
     }
 
-    // Last resort: scan for any matching DLL and return first match
-    if let Ok(entries) = std::fs::read_dir(&target_dir) {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join(profile).join("rd_pipe.dll");
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
+    // Give up gracefully — return the most likely path so the eventual
+    // `Library::new` error is informative. Do NOT scan target subdirs
+    // (could pick a wrong-arch DLL and trigger STATUS_BAD_IMAGE_FORMAT).
+    if !target_triple.is_empty() {
+        target_dir
+            .join(target_triple)
+            .join(profile)
+            .join("rd_pipe.dll")
+    } else {
+        default_path
     }
-
-    // If nothing found, return the target-specific path (so Library::new error is informative)
-    target_path
 }
 
 use std::io;
 use tempfile::NamedTempFile;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegCloseKey, RegLoadAppKeyW, RegOverridePredefKey,
+    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegLoadAppKeyW, RegOverridePredefKey,
 };
 use windows::core::PCWSTR;
 
@@ -72,12 +80,18 @@ use windows::core::PCWSTR;
 /// 1. Loads a private hive file via `RegLoadAppKeyW`.
 /// 2. Redirects `HKEY_CURRENT_USER` for this process to that hive via
 ///    `RegOverridePredefKey`.
-/// 3. On drop: clears the override, closes the hive, deletes the file.
+/// 3. On drop: clears the override, closes the hive (via `Key`'s Drop),
+///    deletes the temp file.
 ///
-/// The live registry is never read or written.
+/// Isolates `HKEY_CURRENT_USER` reads and writes for the current process to
+/// the private hive. Other predefined hives (notably `HKEY_LOCAL_MACHINE`)
+/// are NOT overridden by this helper and may still be read by code under
+/// test. The plugin's `Initialize` for example reads `ChannelNames` from
+/// both HKCU and HKLM; only HKCU is isolated here.
 pub struct HkcuOverride {
-    hive: HKEY,
-    // Field order: hive closed first in Drop, then NamedTempFile drops and deletes the file.
+    // Field order: `hive` Drop runs before `_file` Drop. `Key`'s Drop calls
+    // `RegCloseKey`. NamedTempFile's Drop deletes the file.
+    hive: windows_registry::Key,
     _file: NamedTempFile,
 }
 
@@ -101,11 +115,11 @@ impl HkcuOverride {
             .chain(std::iter::once(0))
             .collect();
 
-        let mut hive = HKEY::default();
+        let mut raw_hive = HKEY::default();
         let rc = unsafe {
             RegLoadAppKeyW(
                 PCWSTR(path_w.as_ptr()),
-                &mut hive,
+                &mut raw_hive,
                 KEY_ALL_ACCESS.0,
                 0,
                 None,
@@ -114,12 +128,13 @@ impl HkcuOverride {
         if rc != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(rc.0 as i32));
         }
+        // Take ownership of the handle via windows_registry::Key — its Drop
+        // will RegCloseKey it for us.
+        let hive = unsafe { windows_registry::Key::from_raw(raw_hive.0 as _) };
 
-        let rc = unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, Some(hive)) };
+        let rc = unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, Some(raw_hive)) };
         if rc != ERROR_SUCCESS {
-            unsafe {
-                let _ = RegCloseKey(hive);
-            }
+            // hive's Drop will close the handle.
             return Err(io::Error::from_raw_os_error(rc.0 as i32));
         }
 
@@ -127,29 +142,21 @@ impl HkcuOverride {
     }
 
     /// Write `ChannelNames` (REG_MULTI_SZ) at the plugin's CLSID subkey
-    /// inside the redirected hive, using the `windows-registry` crate.
+    /// inside the redirected hive.
     pub fn write_channel_names(&self, names: &[&str]) -> windows_core::Result<()> {
         const SUBKEY: &str = r"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}";
-        // Wrap the raw HKEY in a windows_registry::Key. Drop of `root` calls
-        // RegCloseKey on the duplicated handle — but Key::from_raw stores the
-        // handle by-value. To avoid double-close on `self.hive` at Drop,
-        // we forget `root` before returning.
-        let root = unsafe { windows_registry::Key::from_raw(self.hive.0 as _) };
-        let result = (|| -> windows_core::Result<()> {
-            let sub = root.create(SUBKEY)?;
-            sub.set_multi_string("ChannelNames", names)
-        })();
-        // Don't let `root` close `self.hive`.
-        std::mem::forget(root);
-        result
+        let sub = self.hive.create(SUBKEY)?;
+        sub.set_multi_string("ChannelNames", names)
     }
 }
 
 impl Drop for HkcuOverride {
     fn drop(&mut self) {
+        // Restore HKCU first so subsequent code in this process sees the
+        // real hive. The `hive` Key's Drop closes the handle; NamedTempFile
+        // deletes the file.
         unsafe {
             let _ = RegOverridePredefKey(HKEY_CURRENT_USER, None);
-            let _ = RegCloseKey(self.hive);
         }
     }
 }
@@ -304,26 +311,49 @@ pub type DllGetClassObjectFn = unsafe extern "system" fn(
     ppv: OutRef<IClassFactory>,
 ) -> HRESULT;
 
-/// Owns the loaded `rd_pipe.dll`. Library is leaked into a `'static`
-/// so that `Symbol<'static, _>` is valid; process exit cleans up.
+/// Owns the loaded `rd_pipe.dll`. Loaded exactly once per test process via
+/// a `OnceLock`; `Library` and `Symbol` outlive the process.
 pub struct DllHandle {
     pub get_class_object: libloading::Symbol<'static, DllGetClassObjectFn>,
-    // Keep alive to prevent unload; never actually dropped cleanly.
+    // Keep alive to prevent unload; `DllMain(DLL_PROCESS_DETACH)` racing
+    // with tracing-subscriber TLS teardown would otherwise abort the
+    // test process.
     _lib: &'static Library,
 }
 
+// SAFETY: libloading::Symbol is !Send by default but the underlying function
+// pointer is fine to call from any thread; we never re-bind the Library and
+// process-exit cleanup is the only release path.
+unsafe impl Send for DllHandle {}
+unsafe impl Sync for DllHandle {}
+
 impl DllHandle {
-    pub fn load() -> Self {
-        let path = dll_path();
-        let lib = unsafe { Library::new(&path) }
-            .unwrap_or_else(|e| panic!("LoadLibrary {path:?} failed: {e}"));
-        let lib: &'static Library = Box::leak(Box::new(lib));
-        let get_class_object: libloading::Symbol<'static, DllGetClassObjectFn> =
-            unsafe { lib.get(b"DllGetClassObject\0") }.expect("DllGetClassObject export missing");
-        Self {
-            get_class_object,
-            _lib: lib,
-        }
+    /// Returns a process-global handle to the loaded DLL. First call loads
+    /// the DLL; subsequent calls return the same reference. This guarantees
+    /// `DllMain(DLL_PROCESS_ATTACH)` runs exactly once (so
+    /// `tracing_subscriber::fmt().init()` doesn't panic on re-init) and
+    /// avoids per-test handle leaks.
+    pub fn load() -> &'static DllHandle {
+        static HANDLE: std::sync::OnceLock<DllHandle> = std::sync::OnceLock::new();
+        HANDLE.get_or_init(|| {
+            let path = dll_path();
+            let lib = unsafe { Library::new(&path) }
+                .unwrap_or_else(|e| panic!("LoadLibrary {path:?} failed: {e}"));
+            let lib: &'static Library = Box::leak(Box::new(lib));
+            let get_class_object: libloading::Symbol<'static, DllGetClassObjectFn> =
+                unsafe { lib.get(b"DllGetClassObject\0") }
+                    .expect("DllGetClassObject export missing");
+            DllHandle {
+                get_class_object,
+                _lib: lib,
+            }
+        })
+    }
+
+    /// Access the underlying `libloading::Library` for resolving additional
+    /// exports beyond `DllGetClassObject`.
+    pub fn lib(&self) -> &'static Library {
+        self._lib
     }
 }
 

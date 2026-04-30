@@ -10,7 +10,7 @@ use serial_test::serial;
 fn factory_creates_plugin() {
     let _hkcu = common::HkcuOverride::new().expect("override hkcu");
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
     // create_plugin succeeds => DllGetClassObject + CreateInstance(IWTSPlugin) both worked.
     drop(plugin);
 }
@@ -23,7 +23,7 @@ fn initialize_creates_listeners_per_channel() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -32,20 +32,18 @@ fn initialize_creates_listeners_per_channel() {
 
     let events = mgr_state.events.lock().clone();
     // Plugin reads both HKCU (redirected to hive) and HKLM (not redirected).
-    // HKLM may contribute empty or extra names; assert the expected name is present
-    // and no unexpected non-empty names appear.
+    // HKLM may contribute empty or extra names on registered machines; only
+    // assert that the expected name is present.
     let names: std::collections::HashSet<String> = events
         .iter()
         .map(|e| match e {
             common::MgrEvent::CreateListener { name } => name.clone(),
         })
-        .filter(|n| !n.is_empty())
         .collect();
     assert!(
         names.contains("RdPipeTest"),
         "expected CreateListener(\"RdPipeTest\"), got {names:?}"
     );
-    assert_eq!(names.len(), 1, "unexpected extra channel names: {names:?}");
 
     drop(plugin);
 }
@@ -73,7 +71,7 @@ fn new_channel_connection_opens_named_pipe() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -105,7 +103,7 @@ fn channel_to_pipe_round_trip() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -165,7 +163,7 @@ fn pipe_close_writes_xoff_to_channel() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -222,7 +220,7 @@ fn pipe_to_channel_round_trip() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -285,7 +283,7 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
     let _hkcu = common::HkcuOverride::new().expect("override hkcu");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, _state) = common::FakeChannelMgr::new();
     let result = unsafe { plugin.Initialize(&mgr_iface) };
@@ -311,7 +309,7 @@ fn on_close_releases_pipe_writer() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -327,24 +325,44 @@ fn on_close_releases_pipe_writer() {
     common::block_on(async {
         use tokio::net::windows::named_pipe::ClientOptions;
 
-        let _client =
+        let client =
             common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
                 .await;
+
+        // Drop the client first so a subsequent open probes whether the
+        // server has been torn down, rather than just hitting max_instances(1)
+        // with ERROR_PIPE_BUSY.
+        drop(client);
 
         // Call OnClose -> plugin aborts the pipe task.
         unsafe {
             chan_cb.OnClose().expect("OnClose");
         }
 
-        // Allow task to abort and pipe server to tear down.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        // Pipe should no longer be connectable.
-        let result = ClientOptions::new().open(&pipe_path);
-        assert!(
-            result.is_err(),
-            "pipe still connectable after OnClose: {result:?}"
-        );
+        // Poll until the pipe path no longer resolves (FILE_NOT_FOUND).
+        // Plugin's reader loop respawns a fresh server after a client
+        // disconnect, so we may briefly see a connectable pipe even after
+        // OnClose was queued — wait for the abort to actually take effect.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut last_error: Option<std::io::Error> = None;
+        loop {
+            match ClientOptions::new().open(&pipe_path) {
+                Ok(_) => {
+                    // Pipe still alive — server may have respawned. Wait.
+                }
+                Err(err) if err.raw_os_error() == Some(2) => break, // FILE_NOT_FOUND
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "pipe still resolvable after OnClose; last open error: {:?}",
+                    last_error
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     });
 
     drop(plugin);
@@ -358,7 +376,7 @@ fn multiple_channels_produce_multiple_listeners() {
         .expect("write channel names");
 
     let dll = common::DllHandle::load();
-    let plugin = common::create_plugin(&dll);
+    let plugin = common::create_plugin(dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
     unsafe {
@@ -372,13 +390,17 @@ fn multiple_channels_produce_multiple_listeners() {
         .map(|e| match e {
             common::MgrEvent::CreateListener { name } => name.clone(),
         })
-        .filter(|n| !n.is_empty())
         .collect();
 
     let expected: std::collections::HashSet<String> = ["ChanA".to_string(), "ChanB".to_string()]
         .into_iter()
         .collect();
-    assert_eq!(names, expected, "unexpected listener names: {names:?}");
+    // HKLM is not redirected, so machines with rd_pipe registered in HKLM
+    // contribute extra channel names. Only assert expected ⊆ names.
+    assert!(
+        expected.is_subset(&names),
+        "missing expected listener names. expected subset: {expected:?}, actual: {names:?}"
+    );
 
     drop(plugin);
 }

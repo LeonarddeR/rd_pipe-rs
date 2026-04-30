@@ -3,67 +3,46 @@
 
 mod common;
 
-use libloading::Library;
-
-/// Load the DLL and leak it into a `'static` reference. Necessary because
-/// dropping a `Library` calls `FreeLibrary` -> `DllMain(DLL_PROCESS_DETACH)`,
-/// which races with tracing-subscriber TLS teardown and can abort the test
-/// process. Process exit reclaims the leak.
-fn load_dll_leaked() -> &'static Library {
-    let path = common::dll_path();
-    assert!(
-        path.is_file(),
-        "rd_pipe.dll not found at {} — run `cargo build` first or `cargo test` (cargo test does NOT build the cdylib for integration tests that don't link to it)",
-        path.display()
-    );
-    let lib = unsafe { Library::new(&path) }.expect("LoadLibrary failed");
-    Box::leak(Box::new(lib))
-}
+use serial_test::serial;
 
 #[test]
 fn dll_loads_and_exports_present() {
-    let lib = load_dll_leaked();
+    // Use the shared OnceLock loader so DllMain runs once per process; this
+    // also keeps the Library alive for the entire test binary, avoiding a
+    // FreeLibrary/tracing-subscriber TLS race on detach.
+    let dll = common::DllHandle::load();
+    let lib: &libloading::Library = dll.lib();
 
-    // Resolve the three exports the COM in-proc server contract requires.
+    // Resolve the standard COM in-proc server exports this DLL provides.
+    // `DllGetClassObject` and `DllCanUnloadNow` are required by the COM
+    // in-proc-server contract; `DllInstall` is the regsvr32 /i hook this
+    // crate uses for registration. `DllMain` is the module entry point.
     unsafe {
-        let _: libloading::Symbol<unsafe extern "system" fn()> =
-            lib.get(b"DllMain\0").expect("DllMain export missing");
         let _: libloading::Symbol<unsafe extern "system" fn()> = lib
             .get(b"DllGetClassObject\0")
             .expect("DllGetClassObject export missing");
         let _: libloading::Symbol<unsafe extern "system" fn()> =
             lib.get(b"DllInstall\0").expect("DllInstall export missing");
+        let _: libloading::Symbol<unsafe extern "system" fn()> =
+            lib.get(b"DllMain\0").expect("DllMain export missing");
     }
 }
 
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED};
 use windows::Win32::System::Com::IClassFactory;
-use windows::core::{GUID, HRESULT, Interface};
+use windows::core::{GUID, Interface};
 use windows_core::{OutRef, Ref};
-
-/// CLSID published by the production crate. Hard-coded here so the test does
-/// not depend on the crate's Rust API surface; the value is the same string
-/// used in `src/registry.rs`.
-const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
-
-type DllGetClassObjectFn = unsafe extern "system" fn(
-    rclsid: Ref<GUID>,
-    riid: Ref<GUID>,
-    ppv: OutRef<IClassFactory>,
-) -> HRESULT;
 
 #[test]
 fn bad_clsid_returns_class_e_classnotavailable() {
-    let lib = load_dll_leaked();
-    let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
-        unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
+    let dll = common::DllHandle::load();
 
     // A CLSID we made up — guaranteed not to match the plugin's.
     let bad_clsid = GUID::from_u128(0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128);
     let mut out: Option<IClassFactory> = None;
 
     let hr = unsafe {
-        get_class_object(
+        (dll.get_class_object)(
             Ref::from(&bad_clsid),
             Ref::from(&IClassFactory::IID),
             OutRef::from(&mut out),
@@ -82,17 +61,15 @@ fn bad_clsid_returns_class_e_classnotavailable() {
 
 #[test]
 fn bad_iid_returns_e_unexpected() {
-    let lib = load_dll_leaked();
-    let get_class_object: libloading::Symbol<DllGetClassObjectFn> =
-        unsafe { lib.get(b"DllGetClassObject\0") }.expect("resolve DllGetClassObject");
+    let dll = common::DllHandle::load();
 
     // Correct CLSID, made-up IID — plugin must reject.
     let bad_iid = GUID::from_u128(0xCAFEBABE_CAFE_BABE_CAFE_BABECAFEBABEu128);
     let mut out: Option<IClassFactory> = None;
 
     let hr = unsafe {
-        get_class_object(
-            Ref::from(&CLSID_RD_PIPE_PLUGIN),
+        (dll.get_class_object)(
+            Ref::from(&common::CLSID_RD_PIPE_PLUGIN),
             Ref::from(&bad_iid),
             OutRef::from(&mut out),
         )
@@ -106,7 +83,10 @@ fn bad_iid_returns_e_unexpected() {
 }
 
 #[test]
+#[serial]
 fn hkcu_override_smoke() {
+    // Serial: RegOverridePredefKey is process-wide and would race with any
+    // other test that loads the DLL or reads HKCU concurrently.
     let guard = common::HkcuOverride::new().expect("override hkcu");
     guard
         .write_channel_names(&["smoke"])

@@ -56,7 +56,7 @@ binaries:
 
 A shared helper module `tests/common/mod.rs` provides:
 
-- `dll_path()` — locates the cdylib produced by `cargo test`.
+- `dll_path()` — locates the cdylib for the current target. Run `cargo build --target <triple>` before `cargo test --target <triple>`; `cargo test` does not build the cdylib for these integration tests because they load the DLL via `libloading` at runtime (no link dependency).
 - `HkcuOverride` — RAII guard that loads a private hive via
   `RegLoadAppKey` and redirects `HKEY_CURRENT_USER` to it via
   `RegOverridePredefKey`. The live registry is never read or written.
@@ -134,7 +134,7 @@ These are not easily testable in unit tests and require integration testing in a
 
 ## Areas Needing Additional Coverage
 
-### Now Covered (addressed in `integrationTests` branch)
+### Now Covered
 1. **Integration Tests**: End-to-end tests via `tests/dll_smoke.rs` and `tests/dvc_emulation.rs`
 2. **Named Pipe Tests**: Pipe server creation and client communication exercised in scenarios 4–8
 3. **Channel Callback Tests**: Virtual channel data flow in scenarios 5–8
