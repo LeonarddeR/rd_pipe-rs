@@ -342,3 +342,33 @@ fn on_close_releases_pipe_writer() {
     drop(plugin);
     drop(dll);
 }
+
+#[test]
+#[serial]
+fn multiple_channels_produce_multiple_listeners() {
+    let hkcu = common::HkcuOverride::new().expect("override hkcu");
+    hkcu.write_channel_names(&["ChanA", "ChanB"]).expect("write channel names");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(&dll);
+
+    let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+
+    let names: std::collections::HashSet<String> = mgr_state
+        .events
+        .lock()
+        .iter()
+        .map(|e| match e {
+            common::MgrEvent::CreateListener { name } => name.clone(),
+        })
+        .filter(|n| !n.is_empty())
+        .collect();
+
+    let expected: std::collections::HashSet<String> =
+        ["ChanA".to_string(), "ChanB".to_string()].into_iter().collect();
+    assert_eq!(names, expected, "unexpected listener names: {names:?}");
+
+    drop(plugin);
+    drop(dll);
+}
