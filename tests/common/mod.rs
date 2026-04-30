@@ -7,14 +7,22 @@ use std::path::PathBuf;
 
 /// Resolve the path to the built `rd_pipe.dll` for the current Cargo profile and target.
 ///
-/// Honors `CARGO_TARGET_DIR` when set; falls back to `<manifest>/target`.
+/// Resolution order:
+/// 1. `RD_PIPE_DLL_PATH` env var, if set — used by CI to point at a release artifact
+///    (per-arch build or the merged ARM64X DLL).
+/// 2. `CARGO_TARGET_DIR` (or `<manifest>/target`) joined with target triple + profile.
+/// 3. Default host-arch path.
+///
 /// Profile is derived from `cfg!(debug_assertions)`.
-/// Resolves to the DLL matching the compile-time target triple.
 ///
 /// `cargo test` does NOT build the cdylib for these integration tests
 /// (libloading uses it at runtime, no link dependency exists). Run
 /// `cargo build --target <triple>` before `cargo test --target <triple>`.
 pub fn dll_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("RD_PIPE_DLL_PATH") {
+        return PathBuf::from(p);
+    }
+
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
