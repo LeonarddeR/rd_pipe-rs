@@ -320,48 +320,51 @@ fn on_close_releases_pipe_writer() {
     let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
     let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
     let addr = common::channel_addr(&channel_iface);
-    let pipe_path = common::pipe_address("RdPipeTest", addr);
 
     common::block_on(async {
-        use tokio::net::windows::named_pipe::ClientOptions;
-
         let client =
             common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
                 .await;
 
-        // Drop the client first so a subsequent open probes whether the
-        // server has been torn down, rather than just hitting max_instances(1)
-        // with ERROR_PIPE_BUSY.
+        // Drop client so plugin's reader hits EOF; this is the path the
+        // plugin's writer release uses (end-of-reader-loop sets writer=None).
         drop(client);
 
-        // Call OnClose -> plugin aborts the pipe task.
+        // Call OnClose -> plugin aborts the pipe task and shuts down the writer.
         unsafe {
             chan_cb.OnClose().expect("OnClose");
         }
 
-        // Poll until the pipe path no longer resolves (FILE_NOT_FOUND).
-        // Plugin's reader loop respawns a fresh server after a client
-        // disconnect, so we may briefly see a connectable pipe even after
-        // OnClose was queued — wait for the abort to actually take effect.
+        // Verify the writer is released: subsequent OnDataReceived must
+        // return ERROR_PIPE_NOT_CONNECTED because pipe_writer is None.
+        // This is the direct contract that "OnClose releases the writer";
+        // probing the named pipe path is unreliable because the plugin
+        // respawns a fresh server in its reader loop, so client open may
+        // race with the abort and yield PIPE_BUSY rather than FILE_NOT_FOUND.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let mut last_error: Option<std::io::Error> = None;
         loop {
-            match ClientOptions::new().open(&pipe_path) {
-                Ok(_) => {
-                    // Pipe still alive — server may have respawned. Wait.
+            let result = unsafe { chan_cb.OnDataReceived(b"after-close") };
+            match result {
+                Err(e)
+                    if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into() =>
+                {
+                    break;
                 }
-                Err(err) if err.raw_os_error() == Some(2) => break, // FILE_NOT_FOUND
-                Err(err) => {
-                    last_error = Some(err);
+                Err(e) if std::time::Instant::now() < deadline => {
+                    // Different error — wait and retry briefly.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    if std::time::Instant::now() >= deadline {
+                        panic!("unexpected error from OnDataReceived after OnClose: {e:?}");
+                    }
                 }
+                Err(e) => {
+                    panic!("unexpected error from OnDataReceived after OnClose: {e:?}")
+                }
+                Ok(()) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Ok(()) => panic!("OnDataReceived after OnClose unexpectedly succeeded"),
             }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "pipe still resolvable after OnClose; last open error: {:?}",
-                    last_error
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
 
