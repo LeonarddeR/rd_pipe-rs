@@ -306,7 +306,10 @@ impl RdPipeChannelCallback {
                             }
                         }
                     }
-                    Err(e) => error!("Error connecting to pipe client: {}", e),
+                    Err(e) => {
+                        error!("Error connecting to pipe client: {}", e);
+                        continue;
+                    }
                 }
                 let (mut server_reader, server_writer) = split(server);
                 {
