@@ -13,9 +13,7 @@ use std::path::PathBuf;
 pub fn dll_path() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target")
-        });
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
 
     let profile = if cfg!(debug_assertions) {
         "debug"
@@ -34,7 +32,10 @@ pub fn dll_path() -> PathBuf {
     let target_triple = "i686-pc-windows-msvc";
 
     // First, try the target-specific path
-    let target_path = target_dir.join(target_triple).join(profile).join("rd_pipe.dll");
+    let target_path = target_dir
+        .join(target_triple)
+        .join(profile)
+        .join("rd_pipe.dll");
     if target_path.is_file() {
         return target_path;
     }
@@ -102,7 +103,13 @@ impl HkcuOverride {
 
         let mut hive = HKEY::default();
         let rc = unsafe {
-            RegLoadAppKeyW(PCWSTR(path_w.as_ptr()), &mut hive, KEY_ALL_ACCESS.0, 0, None)
+            RegLoadAppKeyW(
+                PCWSTR(path_w.as_ptr()),
+                &mut hive,
+                KEY_ALL_ACCESS.0,
+                0,
+                None,
+            )
         };
         if rc != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(rc.0 as i32));
@@ -122,8 +129,7 @@ impl HkcuOverride {
     /// Write `ChannelNames` (REG_MULTI_SZ) at the plugin's CLSID subkey
     /// inside the redirected hive, using the `windows-registry` crate.
     pub fn write_channel_names(&self, names: &[&str]) -> windows_core::Result<()> {
-        const SUBKEY: &str =
-            r"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}";
+        const SUBKEY: &str = r"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}";
         // Wrap the raw HKEY in a windows_registry::Key. Drop of `root` calls
         // RegCloseKey on the duplicated handle — but Key::from_raw stores the
         // handle by-value. To avoid double-close on `self.hive` at Drop,
@@ -181,14 +187,15 @@ pub struct FakeVirtualChannel {
 impl FakeVirtualChannel {
     pub fn new() -> (IWTSVirtualChannel, Arc<FakeChannelState>) {
         let state = Arc::new(FakeChannelState::default());
-        let iface: IWTSVirtualChannel = FakeVirtualChannel { state: state.clone() }.into();
+        let iface: IWTSVirtualChannel = FakeVirtualChannel {
+            state: state.clone(),
+        }
+        .into();
         (iface, state)
     }
 }
 
-impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl
-    for FakeVirtualChannel_Impl
-{
+impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl for FakeVirtualChannel_Impl {
     fn Write(
         &self,
         cbsize: u32,
@@ -219,7 +226,9 @@ impl windows::Win32::System::RemoteDesktop::IWTSListener_Impl for FakeListener_I
     fn GetConfiguration(
         &self,
     ) -> windows_core::Result<windows::Win32::System::Com::StructuredStorage::IPropertyBag> {
-        Err(windows_core::Error::from_hresult(windows::Win32::Foundation::E_NOTIMPL))
+        Err(windows_core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
     }
 }
 
@@ -244,14 +253,15 @@ pub struct FakeChannelMgr {
 impl FakeChannelMgr {
     pub fn new() -> (IWTSVirtualChannelManager, Arc<FakeMgrState>) {
         let state = Arc::new(FakeMgrState::default());
-        let iface: IWTSVirtualChannelManager = FakeChannelMgr { state: state.clone() }.into();
+        let iface: IWTSVirtualChannelManager = FakeChannelMgr {
+            state: state.clone(),
+        }
+        .into();
         (iface, state)
     }
 }
 
-impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl
-    for FakeChannelMgr_Impl
-{
+impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl for FakeChannelMgr_Impl {
     fn CreateListener(
         &self,
         pszchannelname: &windows_core::PCSTR,
@@ -284,8 +294,7 @@ use windows::Win32::System::RemoteDesktop::IWTSPlugin;
 use windows::core::{GUID, HRESULT, Interface};
 use windows_core::{OutRef, Ref};
 
-pub const CLSID_RD_PIPE_PLUGIN: GUID =
-    GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
+pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
 
 pub type DllGetClassObjectFn = unsafe extern "system" fn(
     rclsid: Ref<GUID>,
@@ -308,9 +317,11 @@ impl DllHandle {
             .unwrap_or_else(|e| panic!("LoadLibrary {path:?} failed: {e}"));
         let lib: &'static Library = Box::leak(Box::new(lib));
         let get_class_object: libloading::Symbol<'static, DllGetClassObjectFn> =
-            unsafe { lib.get(b"DllGetClassObject\0") }
-                .expect("DllGetClassObject export missing");
-        Self { get_class_object, _lib: lib }
+            unsafe { lib.get(b"DllGetClassObject\0") }.expect("DllGetClassObject export missing");
+        Self {
+            get_class_object,
+            _lib: lib,
+        }
     }
 }
 

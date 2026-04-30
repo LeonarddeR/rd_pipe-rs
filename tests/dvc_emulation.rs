@@ -19,7 +19,8 @@ fn factory_creates_plugin() {
 #[serial]
 fn initialize_creates_listeners_per_channel() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
@@ -69,13 +70,16 @@ fn get_listener_cb(
 #[serial]
 fn new_channel_connection_opens_named_pipe() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
     let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
@@ -88,7 +92,9 @@ fn new_channel_connection_opens_named_pipe() {
         std::time::Duration::from_secs(5),
     ));
 
-    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    unsafe {
+        chan_cb.OnClose().expect("OnClose");
+    }
     drop(plugin);
     drop(dll);
 }
@@ -97,13 +103,16 @@ fn new_channel_connection_opens_named_pipe() {
 #[serial]
 fn channel_to_pipe_round_trip() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
     let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
@@ -113,21 +122,19 @@ fn channel_to_pipe_round_trip() {
     common::block_on(async {
         use tokio::io::AsyncReadExt;
 
-        let mut client = common::connect_pipe_client(
-            "RdPipeTest",
-            addr,
-            std::time::Duration::from_secs(5),
-        )
-        .await;
+        let mut client =
+            common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+                .await;
 
         // Wait for XON so the plugin's pipe writer half is registered.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while chan_state.snapshot_writes().is_empty()
-            && std::time::Instant::now() < deadline
-        {
+        while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
+        assert!(
+            !chan_state.snapshot_writes().is_empty(),
+            "timed out waiting for XON"
+        );
 
         // Push data via OnDataReceived -> plugin writes to pipe -> client reads.
         let payload = b"world";
@@ -146,7 +153,9 @@ fn channel_to_pipe_round_trip() {
         assert_eq!(&got, b"world");
     });
 
-    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    unsafe {
+        chan_cb.OnClose().expect("OnClose");
+    }
     drop(plugin);
     drop(dll);
 }
@@ -155,13 +164,16 @@ fn channel_to_pipe_round_trip() {
 #[serial]
 fn pipe_close_writes_xoff_to_channel() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
     let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
@@ -169,21 +181,19 @@ fn pipe_close_writes_xoff_to_channel() {
     let addr = common::channel_addr(&channel_iface);
 
     common::block_on(async {
-        let client = common::connect_pipe_client(
-            "RdPipeTest",
-            addr,
-            std::time::Duration::from_secs(5),
-        )
-        .await;
+        let client =
+            common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+                .await;
 
         // Wait for XON.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while chan_state.snapshot_writes().is_empty()
-            && std::time::Instant::now() < deadline
-        {
+        while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
+        assert!(
+            !chan_state.snapshot_writes().is_empty(),
+            "timed out waiting for XON"
+        );
 
         // Drop client -> plugin reads 0 bytes -> writes XOFF (0x13).
         drop(client);
@@ -201,7 +211,9 @@ fn pipe_close_writes_xoff_to_channel() {
         }
     });
 
-    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    unsafe {
+        chan_cb.OnClose().expect("OnClose");
+    }
     drop(plugin);
     drop(dll);
 }
@@ -210,13 +222,16 @@ fn pipe_close_writes_xoff_to_channel() {
 #[serial]
 fn pipe_to_channel_round_trip() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
     let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
@@ -226,18 +241,13 @@ fn pipe_to_channel_round_trip() {
     common::block_on(async {
         use tokio::io::AsyncWriteExt;
 
-        let mut client = common::connect_pipe_client(
-            "RdPipeTest",
-            addr,
-            std::time::Duration::from_secs(5),
-        )
-        .await;
+        let mut client =
+            common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+                .await;
 
         // Wait for plugin to write XON (0x11).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while chan_state.snapshot_writes().is_empty()
-            && std::time::Instant::now() < deadline
-        {
+        while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let first_writes = chan_state.snapshot_writes();
@@ -263,7 +273,9 @@ fn pipe_to_channel_round_trip() {
         }
     });
 
-    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    unsafe {
+        chan_cb.OnClose().expect("OnClose");
+    }
     drop(plugin);
     drop(dll);
 }
@@ -301,13 +313,16 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
 #[serial]
 fn on_close_releases_pipe_writer() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+    hkcu.write_channel_names(&["RdPipeTest"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
     let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
@@ -318,15 +333,14 @@ fn on_close_releases_pipe_writer() {
     common::block_on(async {
         use tokio::net::windows::named_pipe::ClientOptions;
 
-        let _client = common::connect_pipe_client(
-            "RdPipeTest",
-            addr,
-            std::time::Duration::from_secs(5),
-        )
-        .await;
+        let _client =
+            common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+                .await;
 
         // Call OnClose -> plugin aborts the pipe task.
-        unsafe { chan_cb.OnClose().expect("OnClose"); }
+        unsafe {
+            chan_cb.OnClose().expect("OnClose");
+        }
 
         // Allow task to abort and pipe server to tear down.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -347,13 +361,16 @@ fn on_close_releases_pipe_writer() {
 #[serial]
 fn multiple_channels_produce_multiple_listeners() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
-    hkcu.write_channel_names(&["ChanA", "ChanB"]).expect("write channel names");
+    hkcu.write_channel_names(&["ChanA", "ChanB"])
+        .expect("write channel names");
 
     let dll = common::DllHandle::load();
     let plugin = common::create_plugin(&dll);
 
     let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+    unsafe {
+        plugin.Initialize(&mgr_iface).expect("Initialize");
+    }
 
     let names: std::collections::HashSet<String> = mgr_state
         .events
@@ -365,8 +382,9 @@ fn multiple_channels_produce_multiple_listeners() {
         .filter(|n| !n.is_empty())
         .collect();
 
-    let expected: std::collections::HashSet<String> =
-        ["ChanA".to_string(), "ChanB".to_string()].into_iter().collect();
+    let expected: std::collections::HashSet<String> = ["ChanA".to_string(), "ChanB".to_string()]
+        .into_iter()
+        .collect();
     assert_eq!(names, expected, "unexpected listener names: {names:?}");
 
     drop(plugin);

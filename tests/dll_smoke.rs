@@ -25,8 +25,9 @@ fn dll_loads_and_exports_present() {
     unsafe {
         let _: libloading::Symbol<unsafe extern "system" fn()> =
             lib.get(b"DllMain\0").expect("DllMain export missing");
-        let _: libloading::Symbol<unsafe extern "system" fn()> =
-            lib.get(b"DllGetClassObject\0").expect("DllGetClassObject export missing");
+        let _: libloading::Symbol<unsafe extern "system" fn()> = lib
+            .get(b"DllGetClassObject\0")
+            .expect("DllGetClassObject export missing");
         let _: libloading::Symbol<unsafe extern "system" fn()> =
             lib.get(b"DllInstall\0").expect("DllInstall export missing");
     }
@@ -68,8 +69,14 @@ fn bad_clsid_returns_class_e_classnotavailable() {
         )
     };
 
-    assert_eq!(hr, CLASS_E_CLASSNOTAVAILABLE, "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}");
-    assert!(out.is_none(), "ppv should have been written to None on rejection");
+    assert_eq!(
+        hr, CLASS_E_CLASSNOTAVAILABLE,
+        "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}"
+    );
+    assert!(
+        out.is_none(),
+        "ppv should have been written to None on rejection"
+    );
 }
 
 #[test]
@@ -91,13 +98,18 @@ fn bad_iid_returns_e_unexpected() {
     };
 
     assert_eq!(hr, E_UNEXPECTED, "expected E_UNEXPECTED, got {hr:?}");
-    assert!(out.is_none(), "ppv should have been written to None on rejection");
+    assert!(
+        out.is_none(),
+        "ppv should have been written to None on rejection"
+    );
 }
 
 #[test]
 fn hkcu_override_smoke() {
     let guard = common::HkcuOverride::new().expect("override hkcu");
-    guard.write_channel_names(&["smoke"]).expect("write channel names");
+    guard
+        .write_channel_names(&["smoke"])
+        .expect("write channel names");
     drop(guard);
 }
 
