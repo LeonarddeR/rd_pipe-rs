@@ -372,3 +372,31 @@ pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
         .expect("build tokio runtime")
         .block_on(f)
 }
+
+use windows::Win32::System::RemoteDesktop::IWTSVirtualChannelCallback;
+use windows_core::{BOOL, BSTR};
+
+/// Drive `OnNewChannelConnection` on a captured listener callback and return
+/// the `IWTSVirtualChannelCallback` the plugin produced.
+pub fn trigger_new_channel(
+    listener_cb: &IWTSListenerCallback,
+    channel: &IWTSVirtualChannel,
+) -> IWTSVirtualChannelCallback {
+    let bstr = BSTR::new();
+    let mut accept = BOOL::default();
+    let mut chan_cb: Option<IWTSVirtualChannelCallback> = None;
+
+    unsafe {
+        listener_cb
+            .OnNewChannelConnection(channel, &bstr, &mut accept, &mut chan_cb)
+            .expect("OnNewChannelConnection failed");
+    }
+    assert!(accept.as_bool(), "plugin refused channel");
+    chan_cb.expect("plugin did not return a channel callback")
+}
+
+/// Return the COM vtable pointer of an `IWTSVirtualChannel` as a `usize` —
+/// the same computation the plugin uses to build the pipe path.
+pub fn channel_addr(chan: &IWTSVirtualChannel) -> usize {
+    chan.as_raw() as usize
+}
