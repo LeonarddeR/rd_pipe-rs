@@ -252,7 +252,7 @@ impl RdPipeChannelCallback {
                             break;
                         }
                     };
-                    let _ = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
+                    let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
 
                     ServerOptions::new()
                         .first_pipe_instance(first_pipe_instance)
