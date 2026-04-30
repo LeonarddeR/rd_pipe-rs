@@ -50,6 +50,48 @@ fn initialize_creates_listeners_per_channel() {
     drop(dll);
 }
 
+/// Get the first listener callback with the given channel name from mgr state.
+fn get_listener_cb(
+    mgr_state: &common::FakeMgrState,
+    name: &str,
+) -> windows::Win32::System::RemoteDesktop::IWTSListenerCallback {
+    mgr_state
+        .listeners
+        .lock()
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("no listener for channel {name:?}"))
+        .1
+        .clone()
+}
+
+#[test]
+#[serial]
+fn new_channel_connection_opens_named_pipe() {
+    let hkcu = common::HkcuOverride::new().expect("override hkcu");
+    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(&dll);
+
+    let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+
+    let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+    let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
+    let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+
+    let addr = common::channel_addr(&channel_iface);
+    let _client = common::block_on(common::connect_pipe_client(
+        "RdPipeTest",
+        addr,
+        std::time::Duration::from_secs(5),
+    ));
+
+    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    drop(plugin);
+    drop(dll);
+}
 #[test]
 #[serial]
 fn initialize_with_empty_channels_returns_e_unexpected() {
