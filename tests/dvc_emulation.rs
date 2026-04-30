@@ -95,6 +95,64 @@ fn new_channel_connection_opens_named_pipe() {
 
 #[test]
 #[serial]
+fn channel_to_pipe_round_trip() {
+    let hkcu = common::HkcuOverride::new().expect("override hkcu");
+    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(&dll);
+
+    let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+
+    let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+    let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
+    let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+    let addr = common::channel_addr(&channel_iface);
+
+    common::block_on(async {
+        use tokio::io::AsyncReadExt;
+
+        let mut client = common::connect_pipe_client(
+            "RdPipeTest",
+            addr,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        // Wait for XON so the plugin's pipe writer half is registered.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while chan_state.snapshot_writes().is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
+
+        // Push data via OnDataReceived -> plugin writes to pipe -> client reads.
+        let payload = b"world";
+        unsafe {
+            chan_cb.OnDataReceived(payload).expect("OnDataReceived");
+        }
+
+        let mut got = [0u8; 5];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.read_exact(&mut got),
+        )
+        .await
+        .expect("read timeout")
+        .expect("read");
+        assert_eq!(&got, b"world");
+    });
+
+    unsafe { chan_cb.OnClose().expect("OnClose"); }
+    drop(plugin);
+    drop(dll);
+}
+
+#[test]
+#[serial]
 fn pipe_to_channel_round_trip() {
     let hkcu = common::HkcuOverride::new().expect("override hkcu");
     hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
