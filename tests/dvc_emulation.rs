@@ -296,3 +296,49 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
     drop(plugin);
     drop(dll);
 }
+
+#[test]
+#[serial]
+fn on_close_releases_pipe_writer() {
+    let hkcu = common::HkcuOverride::new().expect("override hkcu");
+    hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+
+    let dll = common::DllHandle::load();
+    let plugin = common::create_plugin(&dll);
+
+    let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+    unsafe { plugin.Initialize(&mgr_iface).expect("Initialize"); }
+
+    let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+    let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
+    let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+    let addr = common::channel_addr(&channel_iface);
+    let pipe_path = common::pipe_address("RdPipeTest", addr);
+
+    common::block_on(async {
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let _client = common::connect_pipe_client(
+            "RdPipeTest",
+            addr,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        // Call OnClose -> plugin aborts the pipe task.
+        unsafe { chan_cb.OnClose().expect("OnClose"); }
+
+        // Allow task to abort and pipe server to tear down.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Pipe should no longer be connectable.
+        let result = ClientOptions::new().open(&pipe_path);
+        assert!(
+            result.is_err(),
+            "pipe still connectable after OnClose: {result:?}"
+        );
+    });
+
+    drop(plugin);
+    drop(dll);
+}
