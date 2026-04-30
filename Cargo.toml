@@ -71,5 +71,7 @@ features = [
     "net",
     "parking_lot",
     "io-util",
-    "time"
+    "time",
+    "macros",
+    "sync"
 ]

@@ -20,6 +20,7 @@ use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    sync::Notify,
     task::JoinHandle,
     time::{Duration, sleep},
 };
@@ -200,6 +201,7 @@ const MSG_XOFF: u8 = 0x13;
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
     pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
+    shutdown: Arc<Notify>,
     join_handle: JoinHandle<()>,
 }
 
@@ -214,11 +216,13 @@ impl RdPipeChannelCallback {
         );
         let channel_agile = AgileReference::new(channel)?;
         let pipe_writer = Arc::new(Mutex::new(None));
+        let shutdown = Arc::new(Notify::new());
         debug!("Constructing the callback");
 
         Ok(Self {
             pipe_writer: pipe_writer.clone(),
-            join_handle: Self::process_pipe(pipe_writer, channel_agile, addr),
+            shutdown: shutdown.clone(),
+            join_handle: Self::process_pipe(pipe_writer, channel_agile, addr, shutdown),
         })
     }
 
@@ -227,6 +231,7 @@ impl RdPipeChannelCallback {
         writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
         channel_agile: AgileReference<IWTSVirtualChannel>,
         pipe_addr: String,
+        shutdown: Arc<Notify>,
     ) -> JoinHandle<()> {
         ASYNC_RUNTIME.spawn(async move {
             let mut first_pipe_instance = true;
@@ -297,57 +302,78 @@ impl RdPipeChannelCallback {
                 trace!("Pipe client connected. Initiating pipe_reader loop");
                 'reader: loop {
                     let mut buf = Vec::with_capacity(64 * 1024);
-                    match server_reader.read_buf(&mut buf).await {
-                        Ok(0) => {
-                            info!("Received 0 bytes, pipe closed by client");
+                    tokio::select! {
+                        result = server_reader.read_buf(&mut buf) => {
+                            match result {
+                                Ok(0) => {
+                                    info!("Received 0 bytes, pipe closed by client");
+                                    let channel = match channel_agile.resolve() {
+                                        Ok(channel) => channel,
+                                        Err(e) => {
+                                            error!("Failed to resolve agile reference for channel: {}", e);
+                                            break 'reader;
+                                        }
+                                    };
+                                    match unsafe { channel.Write(&[MSG_XOFF], None) } {
+                                        Ok(_) => trace!("Wrote XOFF to channel"),
+                                        Err(e) => {
+                                            error!("Error writing XOFF to channel: {}", e);
+                                        }
+                                    }
+                                    break 'reader;
+                                }
+                                Ok(n) => {
+                                    trace!("read {} bytes", n);
+                                    let channel = match channel_agile.resolve() {
+                                        Ok(channel) => channel,
+                                        Err(e) => {
+                                            error!("Failed to resolve agile reference for channel: {}", e);
+                                            break 'reader;
+                                        }
+                                    };
+                                    match unsafe { channel.Write(&buf, None) } {
+                                        Ok(_) => trace!("Wrote {} bytes to channel", n),
+                                        Err(e) => {
+                                            error!("Error during write to channel: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) if e.kind() == WouldBlock => {
+                                    warn!("Reading pipe would block: {}", e);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    error!("Error reading from pipe client: {}", e);
+                                    let channel = match channel_agile.resolve() {
+                                        Ok(channel) => channel,
+                                        Err(e) => {
+                                            error!("Failed to resolve agile reference for channel: {}", e);
+                                            break 'reader;
+                                        }
+                                    };
+                                    match unsafe { channel.Write(&[MSG_XOFF], None) } {
+                                        Ok(_) => trace!("Wrote XOFF to channel"),
+                                        Err(e) => {
+                                            error!("Error writing XOFF to channel: {}", e);
+                                        }
+                                    }
+                                    break 'reader;
+                                }
+                            }
+                        }
+                        _ = shutdown.notified() => {
+                            info!("Shutdown signal received, exiting pipe reader loop");
                             let channel = match channel_agile.resolve() {
                                 Ok(channel) => channel,
                                 Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
+                                    error!("Failed to resolve agile reference for channel during shutdown: {}", e);
                                     break 'reader;
                                 }
                             };
                             match unsafe { channel.Write(&[MSG_XOFF], None) } {
-                                Ok(_) => trace!("Wrote XOFF to channel"),
+                                Ok(_) => trace!("Wrote XOFF to channel on shutdown"),
                                 Err(e) => {
-                                    error!("Error writing XOFF to channel: {}", e);
-                                }
-                            }
-                            break 'reader;
-                        }
-                        Ok(n) => {
-                            trace!("read {} bytes", n);
-                            let channel = match channel_agile.resolve() {
-                                Ok(channel) => channel,
-                                Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
-                                    break 'reader;
-                                }
-                            };
-                            match unsafe { channel.Write(&buf, None) } {
-                                Ok(_) => trace!("Wrote {} bytes to channel", n),
-                                Err(e) => {
-                                    error!("Error during write to channel: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == WouldBlock => {
-                            warn!("Reading pipe would block: {}", e);
-                            continue;
-                        }
-                        Err(e) => {
-                            error!("Error reading from pipe client: {}", e);
-                            let channel = match channel_agile.resolve() {
-                                Ok(channel) => channel,
-                                Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
-                                    break 'reader;
-                                }
-                            };
-                            match unsafe { channel.Write(&[MSG_XOFF], None) } {
-                                Ok(_) => trace!("Wrote XOFF to channel"),
-                                Err(e) => {
-                                    error!("Error writing XOFF to channel: {}", e);
+                                    error!("Error writing XOFF to channel on shutdown: {}", e);
                                 }
                             }
                             break 'reader;
@@ -403,8 +429,12 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
             ASYNC_RUNTIME.block_on(writer.shutdown())?;
             *writer_guard = None;
         }
+        // Signal shutdown to the reader task
+        self.shutdown.notify_one();
+        // Wait for the task to complete cooperatively
         if !self.join_handle.is_finished() {
-            self.join_handle.abort();
+            // Block on the join handle to wait for cooperative shutdown
+            let _ = ASYNC_RUNTIME.block_on(&self.join_handle);
         }
         Ok(())
     }
