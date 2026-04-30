@@ -372,8 +372,25 @@ pub async fn connect_pipe_client(
             Err(_) if start.elapsed() < deadline => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            Err(e) => panic!("pipe {addr} never accepted within {deadline:?}: {e}"),
+            Err(e) => panic!(
+                "pipe {addr} never accepted within {deadline:?}: {e}\n\n--- RdPipe.log tail ---\n{}",
+                read_rdpipe_log_tail()
+            ),
         }
+    }
+}
+
+/// Read the tail of `%TEMP%\RdPipe.log` for diagnostics. Returns a placeholder
+/// if the log is missing or unreadable.
+pub fn read_rdpipe_log_tail() -> String {
+    let path = std::env::temp_dir().join("RdPipe.log");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            let lines: Vec<&str> = s.lines().collect();
+            let start = lines.len().saturating_sub(80);
+            lines[start..].join("\n")
+        }
+        Err(e) => format!("(could not read {}: {e})", path.display()),
     }
 }
 
