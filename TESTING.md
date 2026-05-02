@@ -226,9 +226,13 @@ covering all shipped binaries:
 | `arm64x-on-arm64` | windows-11-arm | aarch64-pc-windows-msvc | rd_pipe-arm64x |
 | `arm64x-on-arm64ec` | windows-11-arm | arm64ec-pc-windows-msvc | rd_pipe-arm64x |
 
-The job depends on `build` and `build-arm64x`, downloads the release DLL
-artifact, and points tests at it via `RD_PIPE_DLL_PATH`. No cdylib build
-runs in the test job — the shipped release binary is what gets tested.
+Each matrix entry downloads its release DLL artifact and points the
+integration tests at it via `RD_PIPE_DLL_PATH`. The job depends on
+`build` and `build-arm64x` so all six entries can pull from a single
+artifact set. The cdylib is not rebuilt in the test job — `cargo
+nextest run` still compiles the unit + integration test binaries from
+source, but the `rd_pipe.dll` they exercise is the shipped release
+artifact.
 
 Tests run via `cargo-nextest` with the `ci` profile defined in
 `.config/nextest.toml`. JUnit XML is consumed by
