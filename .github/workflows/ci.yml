@@ -185,6 +185,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          components: llvm-tools
 
       - name: Build merged ARM64X DLL
         shell: pwsh
@@ -192,6 +193,8 @@ jobs:
           ./arm64x/build_merged.ps1 `
             -Arm64Lib   artifacts/arm64/rd_pipe.lib `
             -Arm64ecLib artifacts/arm64ec/rd_pipe.lib `
+            -Arm64Dll   artifacts/arm64/rd_pipe.dll `
+            -Arm64ecDll artifacts/arm64ec/rd_pipe.dll `
             -OutDir     artifacts/arm64x
 
       - name: Upload artifacts
