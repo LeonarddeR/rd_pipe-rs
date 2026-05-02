@@ -106,9 +106,11 @@ This emits `target/nextest/ci/junit.xml` consumed by the CI report step.
 
 Integration tests load `rd_pipe.dll` via `libloading` at runtime. By default
 `tests/common/mod.rs::dll_path()` resolves the DLL from
-`target/<triple>/<profile>/rd_pipe.dll`. Set `RD_PIPE_DLL_PATH` to load a
-specific DLL — used by CI to run tests against the release artifact (or the
-merged ARM64X DLL):
+`target/<triple>/<profile>/rd_pipe.dll`, where `<profile>` is the Cargo output
+directory (`debug` or `release`, derived from `cfg!(debug_assertions)`), not
+the `cargo nextest --profile` name. Set `RD_PIPE_DLL_PATH` to load a specific
+DLL — used by CI to run tests against the release artifact (or the merged
+ARM64X DLL):
 
 ```powershell
 $env:RD_PIPE_DLL_PATH = "C:\path\to\rd_pipe.dll"
