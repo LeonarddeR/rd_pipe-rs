@@ -176,11 +176,6 @@ jobs:
           name: rd_pipe-arm64ec
           path: artifacts/arm64ec
 
-      - name: Set up MSVC environment (x64 host -> arm64 cross)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
-
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
