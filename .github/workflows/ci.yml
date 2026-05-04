@@ -96,7 +96,7 @@ jobs:
         run: cargo nextest run --target ${{ matrix.target }} --profile ci
 
       - name: Publish test report
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         if: always()
         with:
           report_paths: 'target/nextest/ci/junit.xml'
