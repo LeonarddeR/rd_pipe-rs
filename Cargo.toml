@@ -80,7 +80,7 @@ version = "0.7"
 default-features = false
 
 [dev-dependencies]
-libloading = "0.8"
+libloading = "0.9"
 tempfile = "3"
 serial_test = "3"
 
