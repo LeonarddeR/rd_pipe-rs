@@ -232,7 +232,7 @@ jobs:
           zip -r -9 "../rd_pipe-${GITHUB_REF_NAME}.zip" .
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: rd_pipe-*.zip
           generate_release_notes: true
