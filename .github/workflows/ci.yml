@@ -85,7 +85,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Download DLL artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
           path: dll
@@ -165,13 +165,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download ARM64 artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: rd_pipe-arm64
           path: artifacts/arm64
 
       - name: Download ARM64EC artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: rd_pipe-arm64ec
           path: artifacts/arm64ec
@@ -208,7 +208,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
