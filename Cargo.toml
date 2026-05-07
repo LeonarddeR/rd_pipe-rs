@@ -38,13 +38,13 @@ windows-core = "0.62.2"
 windows-registry = "0.6.1"
 
 [dependencies.tracing-appender]
-version = "0.2.4"
+version = "0.2.5"
 features = [
     "parking_lot",
 ]
 
 [dependencies.tracing-subscriber]
-version = "0.3.22"
+version = "0.3.23"
 default-features = false
 features = [
     "parking_lot",
@@ -65,7 +65,7 @@ features = [
 ]
 
 [dependencies.tokio]
-version = "1.49"
+version = "1.52"
 features = [
     "rt-multi-thread",
     "net",
@@ -85,7 +85,7 @@ tempfile = "3"
 serial_test = "3"
 
 [dev-dependencies.tokio]
-version = "1.49"
+version = "1.52"
 features = [
     "macros",
     "rt-multi-thread",
