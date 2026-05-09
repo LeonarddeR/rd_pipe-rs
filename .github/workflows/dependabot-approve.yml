@@ -1,48 +1,15 @@
-# Source: https://nicolasiensen.github.io/2022-07-23-automating-dependency-updates-with-dependabot-github-auto-merge-and-github-actions/
-name: Dependabot auto-merge
+name: Dependabot approve
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
   check_run:
     types: [completed]
 
 permissions:
   pull-requests: write
-  contents: write
 
 jobs:
-  setup-dependabot-pr:
+  approve:
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.user.login == 'dependabot[bot]'
-    steps:
-      - name: Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@v3
-        with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: Enable auto-merge for Dependabot PRs
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Comment on major updates of any dependencies
-        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-major' }}
-        run: |
-          gh pr comment $PR_URL --body "I'm **not approving** this PR because **it includes a major update of a dependency**"
-          gh pr edit $PR_URL --add-label "requires-manual-qa"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  approve-after-checks:
-    runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'check_run' &&
-      github.event.check_run.conclusion == 'success'
+    if: github.event.check_run.conclusion == 'success'
     steps:
       - name: Find PR for this commit
         id: find-pr
@@ -69,9 +36,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ALL_PASSED=$(gh pr checks ${{ steps.find-pr.outputs.number }} \
-            --repo ${{ github.repository }} --json state \
-            --jq 'all(.state == "SUCCESS" or .state == "SKIPPED" or .state == "NEUTRAL" or .state == "success")')
+          CHECKS=$(gh pr checks ${{ steps.find-pr.outputs.number }} \
+            --repo ${{ github.repository }} --json state)
+          COUNT=$(echo "$CHECKS" | jq 'length')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "all_passed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          ALL_PASSED=$(echo "$CHECKS" | jq 'all(.state == "SUCCESS" or .state == "SKIPPED" or .state == "NEUTRAL" or .state == "success")')
           echo "all_passed=$ALL_PASSED" >> $GITHUB_OUTPUT
 
       - name: Approve patch and minor updates
