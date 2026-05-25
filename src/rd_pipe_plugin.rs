@@ -287,7 +287,10 @@ impl RdPipeChannelCallback {
                 match connect_res {
                     Ok(_) => match channel_write(&channel_agile, &[MSG_XON]) {
                         Ok(()) => trace!("Wrote XON to channel"),
-                        Err(e) => error!("Error writing XON to channel: {}", e),
+                        Err(e) => {
+                            error!("Error writing XON to channel: {}", e);
+                            break;
+                        }
                     },
                     Err(e) => {
                         error!("Error connecting to pipe client: {}", e);
@@ -327,7 +330,10 @@ impl RdPipeChannelCallback {
                             trace!("read {} bytes", n);
                             match channel_write(&channel_agile, &buf) {
                                 Ok(()) => trace!("Wrote {} bytes to channel", n),
-                                Err(e) => error!("Error during write to channel: {}", e),
+                                Err(e) => {
+                                    error!("Error during write to channel: {}", e);
+                                    break 'reader;
+                                }
                             }
                         }
                         Err(e) if e.kind() == WouldBlock => {
