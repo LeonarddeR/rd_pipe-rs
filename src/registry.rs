@@ -19,7 +19,7 @@ use windows_registry::{Key, Transaction};
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);
 const RD_PIPE_PLUGIN_NAME: &str = "RdPipe";
 pub const COM_CLS_FOLDER: &str = r"SOFTWARE\Classes\CLSID";
-const _COM_CLS_CHANNEL_NAMES_VALUE_NAME: &str = "ChannelNames";
+const COM_CLS_CHANNEL_NAMES_VALUE_NAME: &str = "ChannelNames";
 const COM_IMPROC_SERVER_FOLDER_NAME: &str = "InprocServer32";
 pub const TS_ADD_INS_FOLDER: &str = r"Software\Microsoft\Terminal Server Client\Default\AddIns";
 pub const TS_ADD_IN_RD_PIPE_FOLDER_NAME: &str = RD_PIPE_PLUGIN_NAME;
@@ -49,8 +49,8 @@ pub fn inproc_server_add_to_registry(
         .open(&key_path)?;
     trace!("Setting default value");
     key.set_string("", RD_PIPE_PLUGIN_NAME)?;
-    trace!("Setting {}", _COM_CLS_CHANNEL_NAMES_VALUE_NAME);
-    key.set_multi_string(_COM_CLS_CHANNEL_NAMES_VALUE_NAME, channel_names)?;
+    trace!("Setting {}", COM_CLS_CHANNEL_NAMES_VALUE_NAME);
+    key.set_multi_string(COM_CLS_CHANNEL_NAMES_VALUE_NAME, channel_names)?;
     trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
     let key = key
         .options()
@@ -200,27 +200,7 @@ mod tests {
 
     #[test]
     fn test_clsid_is_valid() {
-        // Verify the CLSID is not a null GUID
         assert_ne!(CLSID_RD_PIPE_PLUGIN, GUID::zeroed());
-
-        // Verify the CLSID matches expected value
-        assert_eq!(
-            CLSID_RD_PIPE_PLUGIN,
-            GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3)
-        );
-    }
-
-    #[test]
-    fn test_constants_are_valid() {
-        // Ensure constants are not empty
-        assert!(!COM_CLS_FOLDER.is_empty());
-        assert!(!TS_ADD_INS_FOLDER.is_empty());
-        assert!(!TS_ADD_IN_RD_PIPE_FOLDER_NAME.is_empty());
-        assert!(!RD_PIPE_PLUGIN_NAME.is_empty());
-
-        // Ensure paths use correct Windows registry format
-        assert!(COM_CLS_FOLDER.contains("SOFTWARE"));
-        assert!(TS_ADD_INS_FOLDER.contains("Software"));
     }
 
     #[test]

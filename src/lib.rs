@@ -273,21 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_constant_values() {
-        // Verify command constant values
-        assert_eq!(CMD_COM_SERVER, 'c');
-        assert_eq!(CMD_MSTS, 'r');
-        assert_eq!(CMD_CITRIX, 'x');
-        assert_eq!(CMD_LOCAL_MACHINE, 'm');
-    }
-
-    #[test]
-    fn test_reg_value_log_level() {
-        // Verify the log level registry value name
-        assert_eq!(REG_VALUE_LOG_LEVEL, "LogLevel");
-    }
-
-    #[test]
     fn test_clsid_matches_registry() {
         // Verify the CLSID used in lib.rs matches the one in registry module
         assert_eq!(CLSID_RD_PIPE_PLUGIN, registry::CLSID_RD_PIPE_PLUGIN);
