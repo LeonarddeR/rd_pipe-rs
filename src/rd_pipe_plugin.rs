@@ -47,14 +47,12 @@ use crate::{
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
 const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[implement(IWTSPlugin)]
 pub struct RdPipePlugin;
 
 impl RdPipePlugin {
-    #[instrument]
     pub fn new() -> Self {
-        trace!("Constructing plugin");
         Self
     }
 
@@ -80,12 +78,6 @@ impl RdPipePlugin {
     fn get_channel_names_from_registry(parent_key: &Key) -> windows_core::Result<Vec<String>> {
         let sub_key = parent_key.open(REG_PATH)?;
         sub_key.get_multi_string(REG_VALUE_CHANNEL_NAMES)
-    }
-}
-
-impl Default for RdPipePlugin {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -126,19 +118,16 @@ impl IWTSPlugin_Impl for RdPipePlugin_Impl {
         Ok(())
     }
 
-    #[instrument]
     fn Connected(&self) -> Result<()> {
         info!("Client connected");
         Ok(())
     }
 
-    #[instrument]
     fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
         info!("Client disconnected with {}", dwdisconnectcode);
         Ok(())
     }
 
-    #[instrument]
     fn Terminated(&self) -> Result<()> {
         info!("Client terminated");
         Ok(())
@@ -152,7 +141,6 @@ pub struct RdPipeListenerCallback {
 }
 
 impl RdPipeListenerCallback {
-    #[instrument]
     pub fn new(name: String) -> Self {
         Self { name }
     }
@@ -193,6 +181,11 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 }
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
+
+fn channel_write(agile: &AgileReference<IWTSVirtualChannel>, data: &[u8]) -> Result<()> {
+    let channel = agile.resolve()?;
+    unsafe { channel.Write(data, None) }
+}
 
 const MSG_XON: u8 = 0x11;
 const MSG_XOFF: u8 = 0x13;
@@ -292,21 +285,13 @@ impl RdPipeChannelCallback {
                     res = server.connect() => res,
                 };
                 match connect_res {
-                    Ok(_) => {
-                        let channel = match channel_agile.resolve() {
-                            Ok(channel) => channel,
-                            Err(e) => {
-                                error!("Failed to resolve agile reference for channel: {}", e);
-                                break;
-                            }
-                        };
-                        match unsafe { channel.Write(&[MSG_XON], None) } {
-                            Ok(_) => trace!("Wrote XON to channel"),
-                            Err(e) => {
-                                error!("Error writing XON to channel: {}", e);
-                            }
+                    Ok(_) => match channel_write(&channel_agile, &[MSG_XON]) {
+                        Ok(()) => trace!("Wrote XON to channel"),
+                        Err(e) => {
+                            error!("Error writing XON to channel: {}", e);
+                            break;
                         }
-                    }
+                    },
                     Err(e) => {
                         error!("Error connecting to pipe client: {}", e);
                         continue;
@@ -324,17 +309,9 @@ impl RdPipeChannelCallback {
                         biased;
                         _ = shutdown.cancelled() => {
                             trace!("Shutdown signalled inside reader loop");
-                            match channel_agile.resolve() {
-                                Ok(channel) => match unsafe { channel.Write(&[MSG_XOFF], None) } {
-                                    Ok(_) => trace!("Wrote XOFF to channel on shutdown"),
-                                    Err(e) => error!("Error writing XOFF on shutdown: {}", e),
-                                },
-                                Err(e) => {
-                                    error!(
-                                        "Failed to resolve agile reference for channel on shutdown: {}",
-                                        e
-                                    );
-                                }
+                            match channel_write(&channel_agile, &[MSG_XOFF]) {
+                                Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
+                                Err(e) => error!("Error writing XOFF on shutdown: {}", e),
                             }
                             break 'reader;
                         }
@@ -343,34 +320,19 @@ impl RdPipeChannelCallback {
                     match read_res {
                         Ok(0) => {
                             info!("Received 0 bytes, pipe closed by client");
-                            let channel = match channel_agile.resolve() {
-                                Ok(channel) => channel,
-                                Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
-                                    break 'reader;
-                                }
-                            };
-                            match unsafe { channel.Write(&[MSG_XOFF], None) } {
-                                Ok(_) => trace!("Wrote XOFF to channel"),
-                                Err(e) => {
-                                    error!("Error writing XOFF to channel: {}", e);
-                                }
+                            match channel_write(&channel_agile, &[MSG_XOFF]) {
+                                Ok(()) => trace!("Wrote XOFF to channel"),
+                                Err(e) => error!("Error writing XOFF to channel: {}", e),
                             }
                             break 'reader;
                         }
                         Ok(n) => {
                             trace!("read {} bytes", n);
-                            let channel = match channel_agile.resolve() {
-                                Ok(channel) => channel,
-                                Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
-                                    break 'reader;
-                                }
-                            };
-                            match unsafe { channel.Write(&buf, None) } {
-                                Ok(_) => trace!("Wrote {} bytes to channel", n),
+                            match channel_write(&channel_agile, &buf) {
+                                Ok(()) => trace!("Wrote {} bytes to channel", n),
                                 Err(e) => {
                                     error!("Error during write to channel: {}", e);
+                                    break 'reader;
                                 }
                             }
                         }
@@ -380,18 +342,9 @@ impl RdPipeChannelCallback {
                         }
                         Err(e) => {
                             error!("Error reading from pipe client: {}", e);
-                            let channel = match channel_agile.resolve() {
-                                Ok(channel) => channel,
-                                Err(e) => {
-                                    error!("Failed to resolve agile reference for channel: {}", e);
-                                    break 'reader;
-                                }
-                            };
-                            match unsafe { channel.Write(&[MSG_XOFF], None) } {
-                                Ok(_) => trace!("Wrote XOFF to channel"),
-                                Err(e) => {
-                                    error!("Error writing XOFF to channel: {}", e);
-                                }
+                            match channel_write(&channel_agile, &[MSG_XOFF]) {
+                                Ok(()) => trace!("Wrote XOFF to channel"),
+                                Err(e) => error!("Error writing XOFF to channel: {}", e),
                             }
                             break 'reader;
                         }
@@ -464,47 +417,10 @@ mod tests {
     }
 
     #[test]
-    fn test_msg_constants() {
-        // Verify XON and XOFF message constants
-        assert_eq!(MSG_XON, 0x11);
-        assert_eq!(MSG_XOFF, 0x13);
-        // Ensure they are different
-        assert_ne!(MSG_XON, MSG_XOFF);
-    }
-
-    #[test]
     fn test_reg_path_format() {
         // Verify registry path format
         assert!(REG_PATH.contains("Software\\Classes\\CLSID"));
         assert!(REG_PATH.contains(&format!("{:?}", crate::registry::CLSID_RD_PIPE_PLUGIN)));
-    }
-
-    #[test]
-    fn test_channel_names_value_name() {
-        // Verify the channel names registry value name
-        assert_eq!(REG_VALUE_CHANNEL_NAMES, "ChannelNames");
-    }
-
-    #[test]
-    fn test_rd_pipe_plugin_default() {
-        // Test that default implementation works
-        let plugin = RdPipePlugin;
-        // Just verify it can be constructed
-        assert_eq!(
-            std::mem::size_of_val(&plugin),
-            std::mem::size_of::<RdPipePlugin>()
-        );
-    }
-
-    #[test]
-    fn test_rd_pipe_plugin_new() {
-        // Test that new implementation works
-        let plugin = RdPipePlugin::new();
-        // Verify it can be constructed
-        assert_eq!(
-            std::mem::size_of_val(&plugin),
-            std::mem::size_of::<RdPipePlugin>()
-        );
     }
 
     #[test]

@@ -71,8 +71,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         Ok(())
     }
 
-    #[instrument]
-    fn LockServer(&self, lock: BOOL) -> Result<()> {
+    fn LockServer(&self, _lock: BOOL) -> Result<()> {
         Ok(())
     }
 }
