@@ -38,7 +38,8 @@ use tracing::{debug, error, instrument, trace};
 use windows::{
     Win32::{
         Foundation::{
-            CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE, S_OK,
+            CLASS_E_CLASSNOTAVAILABLE, E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE,
+            S_OK,
         },
         System::{
             Com::IClassFactory,
@@ -48,7 +49,7 @@ use windows::{
     },
     core::{GUID, HRESULT, Interface, PCWSTR},
 };
-use windows_core::{BOOL, OutRef, Ref};
+use windows_core::BOOL;
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
@@ -114,41 +115,37 @@ pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_vo
     true.into()
 }
 
+/// # Safety
+/// Called by COM with valid non-null pointers per the COM contract.
 #[unsafe(no_mangle)]
 #[instrument(skip_all)]
-pub extern "system" fn DllGetClassObject(
-    rclsid: Ref<GUID>,
-    riid: Ref<GUID>,
-    ppv: OutRef<IClassFactory>,
+pub unsafe extern "system" fn DllGetClassObject(
+    rclsid: *const GUID,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
 ) -> HRESULT {
     debug!("DllGetClassObject called");
-    let clsid = match rclsid.ok() {
-        Ok(c) => *c,
-        Err(e) => {
-            return e.into();
-        }
-    };
-    let iid = match riid.ok() {
-        Ok(i) => *i,
-        Err(e) => {
-            return e.into();
-        }
-    };
-
+    if !ppv.is_null() {
+        unsafe { *ppv = core::ptr::null_mut() };
+    }
+    if rclsid.is_null() || riid.is_null() || ppv.is_null() {
+        return E_POINTER;
+    }
+    let clsid = unsafe { *rclsid };
+    let iid = unsafe { *riid };
     if clsid != CLSID_RD_PIPE_PLUGIN {
         error!("DllGetClassObject called for unknown class: {:?}", clsid);
-        _ = ppv.write(None);
         return CLASS_E_CLASSNOTAVAILABLE;
     }
     if iid != IClassFactory::IID {
         error!("DllGetClassObject called for unknown interface: {:?}", iid);
-        _ = ppv.write(None);
         return E_UNEXPECTED;
     }
     trace!("Constructing class factory");
-    let factory = ClassFactory;
+    let factory: IClassFactory = ClassFactory.into();
     trace!("Setting result pointer to class factory");
-    ppv.write(Some(factory.into())).into()
+    unsafe { *ppv = factory.into_raw() };
+    S_OK
 }
 
 const CMD_COM_SERVER: char = 'c'; // Registers/unregisters the COM server
@@ -158,7 +155,8 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 
 #[unsafe(no_mangle)]
 #[instrument]
-pub extern "system" fn DllInstall(install: bool, cmd_line: PCWSTR) -> HRESULT {
+pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
+    let install = install.as_bool();
     debug!("DllInstall called");
     if cmd_line.is_null() {
         error!("No command line provided");

@@ -309,14 +309,12 @@ use libloading::Library;
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::RemoteDesktop::IWTSPlugin;
 use windows::core::{GUID, HRESULT, Interface};
-use windows_core::{OutRef, Ref};
-
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
 
 pub type DllGetClassObjectFn = unsafe extern "system" fn(
-    rclsid: Ref<GUID>,
-    riid: Ref<GUID>,
-    ppv: OutRef<IClassFactory>,
+    rclsid: *const GUID,
+    riid: *const GUID,
+    ppv: *mut *mut core::ffi::c_void,
 ) -> HRESULT;
 
 /// Owns the loaded `rd_pipe.dll`. Loaded exactly once per test process via
@@ -368,17 +366,16 @@ impl DllHandle {
 /// Calls `DllGetClassObject` → `IClassFactory`, then `CreateInstance` →
 /// `IWTSPlugin`.
 pub fn create_plugin(dll: &DllHandle) -> IWTSPlugin {
-    let mut factory: Option<IClassFactory> = None;
+    let mut factory_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
     let hr = unsafe {
-        (dll.get_class_object)(
-            Ref::from(&CLSID_RD_PIPE_PLUGIN),
-            Ref::from(&IClassFactory::IID),
-            OutRef::from(&mut factory),
-        )
+        (dll.get_class_object)(&CLSID_RD_PIPE_PLUGIN, &IClassFactory::IID, &mut factory_ptr)
     };
     assert!(hr.is_ok(), "DllGetClassObject returned {hr:?}");
-    let factory = factory.expect("factory is None after DllGetClassObject");
-
+    assert!(
+        !factory_ptr.is_null(),
+        "factory is null after DllGetClassObject"
+    );
+    let factory = unsafe { IClassFactory::from_raw(factory_ptr as *mut _) };
     unsafe {
         factory
             .CreateInstance::<Option<&windows_core::IUnknown>, IWTSPlugin>(None)

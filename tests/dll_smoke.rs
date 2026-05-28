@@ -28,10 +28,10 @@ fn dll_loads_and_exports_present() {
     }
 }
 
+use core::ffi::c_void;
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED};
 use windows::Win32::System::Com::IClassFactory;
 use windows::core::{GUID, Interface};
-use windows_core::{OutRef, Ref};
 
 #[test]
 fn bad_clsid_returns_class_e_classnotavailable() {
@@ -39,23 +39,17 @@ fn bad_clsid_returns_class_e_classnotavailable() {
 
     // A CLSID we made up — guaranteed not to match the plugin's.
     let bad_clsid = GUID::from_u128(0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128);
-    let mut out: Option<IClassFactory> = None;
+    let mut out: *mut c_void = core::ptr::null_mut();
 
-    let hr = unsafe {
-        (dll.get_class_object)(
-            Ref::from(&bad_clsid),
-            Ref::from(&IClassFactory::IID),
-            OutRef::from(&mut out),
-        )
-    };
+    let hr = unsafe { (dll.get_class_object)(&bad_clsid, &IClassFactory::IID, &mut out) };
 
     assert_eq!(
         hr, CLASS_E_CLASSNOTAVAILABLE,
         "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}"
     );
     assert!(
-        out.is_none(),
-        "ppv should have been written to None on rejection"
+        out.is_null(),
+        "ppv should have been written to null on rejection"
     );
 }
 
@@ -65,20 +59,14 @@ fn bad_iid_returns_e_unexpected() {
 
     // Correct CLSID, made-up IID — plugin must reject.
     let bad_iid = GUID::from_u128(0xCAFEBABE_CAFE_BABE_CAFE_BABECAFEBABEu128);
-    let mut out: Option<IClassFactory> = None;
+    let mut out: *mut c_void = core::ptr::null_mut();
 
-    let hr = unsafe {
-        (dll.get_class_object)(
-            Ref::from(&common::CLSID_RD_PIPE_PLUGIN),
-            Ref::from(&bad_iid),
-            OutRef::from(&mut out),
-        )
-    };
+    let hr = unsafe { (dll.get_class_object)(&common::CLSID_RD_PIPE_PLUGIN, &bad_iid, &mut out) };
 
     assert_eq!(hr, E_UNEXPECTED, "expected E_UNEXPECTED, got {hr:?}");
     assert!(
-        out.is_none(),
-        "ppv should have been written to None on rejection"
+        out.is_null(),
+        "ppv should have been written to null on rejection"
     );
 }
 
