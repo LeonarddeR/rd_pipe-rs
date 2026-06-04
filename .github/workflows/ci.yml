@@ -186,10 +186,10 @@ jobs:
           name: rd_pipe-arm64ec
           path: artifacts/arm64ec
 
-      - name: Install rust
-        uses: dtolnay/rust-toolchain@master
+      - name: Set up VS Developer Command Prompt (arm64)
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          toolchain: nightly
+          arch: arm64
 
       - name: Build merged ARM64X DLL
         shell: pwsh
