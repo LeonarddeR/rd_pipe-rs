@@ -23,6 +23,17 @@ cargo fmt --all -- --check                         # CI style check
 
 CI matrix targets: `i686`, `x86_64`, `aarch64`, `arm64ec` — all `*-pc-windows-msvc`. Citrix registration code (`ctx_*`) is `#[cfg(target_arch = "x86")]` only.
 
+## ARM64X merged DLL (`arm64x/build_merged.ps1`)
+
+The `aarch64` + `arm64ec` staticlibs are linked into one ARM64X (hybrid) DLL by `arm64x/build_merged.ps1`, using `rust-lld` (`/machine:arm64x`) and `llvm-readobj` from the active rustc toolchain (needs the `llvm-tools` component). Per-arch export tables are generated on the fly from each DLL via `llvm-readobj --coff-exports`.
+
+Two hard requirements, both learned the hard way:
+
+- **Toolchain must be `nightly`.** `arm64ec` staticlibs built on stable/beta crash at `0xc0000096` when an ARM64X DLL is loaded from an x64 process on ARM64 Windows (rust-lang/rust#145154). Fixed by #148799 (TLS dtors → FLS), first in nightly `1.98.0` (2026-06-03). The `Test (arm64x-on-arm64ec)` job is the gate; it only runs on the `windows-11-arm` runner.
+- **Windows SDK >= 10.0.28000 on the linking runner.** With SDK 10.0.26100 the linker pulls `msvcrt.lib`'s vcstartup glue (`utility.obj`), which references static-only `__vcrt_initialize` / `__acrt_initialize` and fails the link. Pulling in the static `libvcruntime`/`libucrt` makes it link but double-initialises the CRT → merged DLL crashes at load (`0xc0000005`). SDK >= 28000 doesn't pull `utility.obj`, so a **dynamic-CRT-only** link (kernel32/msvcrt/ucrt/vcruntime import libs, both arches by full path, no ambient `LIB`) is correct and runtime-safe. `Get-SdkLibRoot` enforces the version; the `build-arm64x` CI job installs it via `winget`.
+
+The script can be exercised on a Windows ARM64 host: build both staticlibs+DLLs (`cargo +nightly build --release --target {aarch64,arm64ec}-pc-windows-msvc`), run the script with `$env:LIB=''`, then validate the merged DLL with `RD_PIPE_DLL_PATH=<dll> cargo +nightly nextest run --target aarch64-pc-windows-msvc -E 'binary(dll_smoke) or binary(dvc_emulation)'`.
+
 ## Registration (DllInstall)
 
 `regsvr32 /i:"<flags> <ChannelName1> <ChannelName2> ..." rd_pipe.dll` drives registration via `DllInstall`. Flag chars parsed from arg[0]:
