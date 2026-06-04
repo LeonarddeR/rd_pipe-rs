@@ -28,7 +28,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: beta
+          toolchain: nightly
           components: rustfmt
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
@@ -45,26 +45,32 @@ jobs:
             target: i686-pc-windows-msvc
             runner: windows-2025
             artifact: rd_pipe-x86
+            toolchain: stable
           - name: x64
             target: x86_64-pc-windows-msvc
             runner: windows-2025
             artifact: rd_pipe-x64
+            toolchain: stable
           - name: arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64
+            toolchain: nightly
           - name: arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64ec
+            toolchain: nightly
           - name: arm64x-on-arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
+            toolchain: nightly
           - name: arm64x-on-arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
+            toolchain: nightly
 
     steps:
       - uses: actions/checkout@v6
@@ -72,7 +78,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: beta
+          toolchain: ${{ matrix.toolchain }}
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -115,12 +121,16 @@ jobs:
         include:
           - target: i686-pc-windows-msvc
             suffix: x86
+            toolchain: stable
           - target: x86_64-pc-windows-msvc
             suffix: x64
+            toolchain: stable
           - target: aarch64-pc-windows-msvc
             suffix: arm64
+            toolchain: nightly
           - target: arm64ec-pc-windows-msvc
             suffix: arm64ec
+            toolchain: nightly
 
     steps:
       - uses: actions/checkout@v6
@@ -128,7 +138,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: beta
+          toolchain: ${{ matrix.toolchain }}
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -179,7 +189,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: beta
+          toolchain: nightly
           components: llvm-tools
 
       - name: Build merged ARM64X DLL

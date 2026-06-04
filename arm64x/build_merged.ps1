@@ -81,12 +81,87 @@ New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
 # All other Win32 imports (advapi32, bcrypt, ntdll, ole32, oleaut32,
 # userenv, ws2_32, synchronization) are pulled in transitively via the
 # Rust staticlibs' raw_dylib stubs.
-$sdkLibs = @(
-    'kernel32.lib',
-    'msvcrt.lib',
-    'ucrt.lib',
-    'vcruntime.lib'
-)
+#
+# An /machine:arm64x image has TWO symbol namespaces: a native ARM64 view
+# and an ARM64EC (x64-ABI) view. Each view must be satisfied by CRT libs
+# of the matching architecture. Passing these by bare name only resolves
+# them from the ambient LIB env, which holds a single architecture, so one
+# view ends up with "undefined symbol ... (native symbol)" / "(EC symbol)"
+# errors. We therefore locate the ARM64 *and* x64 flavours of each lib via
+# the installed VS toolset + Windows SDK and pass them by full path, so the
+# link is self-contained and does not depend on LIB.
+$crtLibNames = @('kernel32.lib', 'msvcrt.lib', 'ucrt.lib', 'vcruntime.lib')
+
+# Resolve the VS MSVC tools lib root (…\VC\Tools\MSVC\<ver>\lib) and the
+# Windows SDK lib root (…\Lib\<ver>) for the current machine.
+function Get-MsvcLibRoot {
+    if ($env:VCToolsInstallDir) {
+        $r = Join-Path $env:VCToolsInstallDir 'lib'
+        if (Test-Path -LiteralPath $r) { return (Resolve-Path -LiteralPath $r).Path }
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+    $vsRoot = (& $vswhere -latest -prerelease -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath | Select-Object -First 1)
+    if (-not $vsRoot) { $vsRoot = (& $vswhere -latest -prerelease -products * -property installationPath | Select-Object -First 1) }
+    if (-not $vsRoot) { throw "No Visual Studio with VC tools found via vswhere" }
+    $verFile = Join-Path $vsRoot 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+    if (-not (Test-Path -LiteralPath $verFile)) { throw "VC tools version file not found at $verFile" }
+    $ver = (Get-Content -LiteralPath $verFile -Raw).Trim()
+    $root = Join-Path $vsRoot "VC\Tools\MSVC\$ver\lib"
+    if (-not (Test-Path -LiteralPath $root)) { throw "MSVC lib root not found at $root" }
+    return $root
+}
+
+function Get-SdkLibRoot {
+    $kitsRoot = $null
+    foreach ($hive in 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\Windows\v10.0',
+                      'HKLM:\SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0') {
+        $p = (Get-ItemProperty -Path $hive -Name 'KitsRoot10' -ErrorAction SilentlyContinue).KitsRoot10
+        if ($p) { $kitsRoot = $p; break }
+    }
+    if (-not $kitsRoot) { $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10' }
+    $libBase = Join-Path $kitsRoot 'Lib'
+    if (-not (Test-Path -LiteralPath $libBase)) { throw "Windows SDK Lib base not found at $libBase" }
+    # Highest-versioned SDK that ships both arm64 and x64 ucrt libs.
+    $sdk = Get-ChildItem -LiteralPath $libBase -Directory |
+        Where-Object { (Test-Path (Join-Path $_.FullName 'ucrt\arm64')) -and
+                       (Test-Path (Join-Path $_.FullName 'ucrt\x64')) } |
+        Sort-Object { [version]$_.Name } -Descending |
+        Select-Object -First 1
+    if (-not $sdk) { throw "No Windows SDK with both arm64 and x64 ucrt libs under $libBase" }
+    return $sdk.FullName
+}
+
+$msvcLibRoot = Get-MsvcLibRoot
+$sdkLibRoot = Get-SdkLibRoot
+Write-Host "==> MSVC lib root: $msvcLibRoot"
+Write-Host "==> Windows SDK lib root: $sdkLibRoot"
+
+# Map each bare CRT lib to its real location per architecture. The native
+# ARM64 view uses the arm64 libs; the ARM64EC view uses the x64 (x64-ABI)
+# libs. kernel32 lives under the SDK 'um' dir, ucrt under 'ucrt', and
+# msvcrt/vcruntime under the MSVC tools lib dir.
+function Resolve-CrtLib {
+    param([string]$Name, [string]$Arch)
+    switch ($Name) {
+        'kernel32.lib' { $p = Join-Path $sdkLibRoot  "um\$Arch\$Name" }
+        'ucrt.lib'     { $p = Join-Path $sdkLibRoot  "ucrt\$Arch\$Name" }
+        default        { $p = Join-Path $msvcLibRoot "$Arch\$Name" }
+    }
+    if (-not (Test-Path -LiteralPath $p)) { throw "CRT lib not found: $p" }
+    return $p
+}
+
+$sdkLibs = @()
+foreach ($arch in 'arm64', 'x64') {
+    foreach ($name in $crtLibNames) {
+        $sdkLibs += (Resolve-CrtLib -Name $name -Arch $arch)
+    }
+}
+Write-Host "==> CRT libs (arm64 native + x64 EC):"
+$sdkLibs | ForEach-Object { Write-Host "    $_" }
 
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
 
