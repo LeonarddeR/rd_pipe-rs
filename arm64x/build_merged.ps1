@@ -19,10 +19,10 @@
 # one architecture.
 #
 # DEF files are generated on the fly from the per-arch DLLs via
-# llvm-readobj --coff-exports so the merged binary's export table is the
-# exact union of the per-arch tables (DllMain, DllGetClassObject,
-# DllInstall, plus anything Rust adds in the future). Avoids drift
-# between a hand-maintained DEF and what rustc actually exports.
+# `dumpbin /exports` (same VS install, no extra components needed) so the
+# merged binary's export table is the exact union of the per-arch tables
+# (DllMain, DllGetClassObject, DllInstall, plus anything Rust adds in the
+# future). Avoids drift between a hand-maintained DEF and what rustc exports.
 
 [CmdletBinding()]
 param(
@@ -35,20 +35,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Resolve llvm-readobj bundled with the active rustc toolchain.
-# Requires the `llvm-tools` rustup component.
-$sysroot = (& rustc --print sysroot).Trim()
-$hostTriple = (& rustc -vV | Select-String '^host:').ToString().Split(' ', 2)[1].Trim()
-$rustlibBin = Join-Path $sysroot "lib\rustlib\$hostTriple\bin"
-$readobjExe = Join-Path $rustlibBin 'llvm-readobj.exe'
-if (-not (Test-Path -LiteralPath $readobjExe)) {
-    throw "llvm-readobj not found at $readobjExe (install rustup component 'llvm-tools')"
-}
-
-# Resolve MSVC link.exe. We prefer the ARM64-hosted linker so the process
-# itself runs natively; fall back to x64-hosted which works under WOW64.
-# Uses VCToolsInstallDir env (set by vcvars) or falls back to vswhere.
-function Get-MsvcLinkExe {
+# Resolve MSVC link.exe and dumpbin.exe. Both come from the same VS VC tools
+# install — no extra rustup components required.
+# Prefers ARM64-hosted binaries (run natively); falls back to x64-hosted.
+# Uses VCToolsInstallDir env (set by vcvars) or discovers via vswhere.
+function Get-MsvcTool {
+    param([string]$Name)
     $vcRoot = $null
     if ($env:VCToolsInstallDir) {
         $vcRoot = $env:VCToolsInstallDir.TrimEnd('\/')
@@ -66,30 +58,23 @@ function Get-MsvcLinkExe {
         $vcRoot = Join-Path $vsRoot "VC\Tools\MSVC\$ver"
     }
     foreach ($hostDir in 'Hostarm64\arm64', 'HostARM64\arm64', 'Hostx64\x64') {
-        $p = Join-Path $vcRoot "bin\$hostDir\link.exe"
+        $p = Join-Path $vcRoot "bin\$hostDir\$Name"
         if (Test-Path -LiteralPath $p) { return $p }
     }
-    throw "MSVC link.exe not found under $vcRoot\bin"
+    throw "MSVC $Name not found under $vcRoot\bin"
 }
 
 function Get-MsvcLibRoot {
-    $vcRoot = $null
+    # Derive lib root from VCToolsInstallDir or the same vswhere path Get-MsvcTool uses.
     if ($env:VCToolsInstallDir) {
-        $vcRoot = $env:VCToolsInstallDir.TrimEnd('\/')
-        $r = Join-Path $vcRoot 'lib'
+        $r = Join-Path $env:VCToolsInstallDir.TrimEnd('\/') 'lib'
         if (Test-Path -LiteralPath $r) { return (Resolve-Path -LiteralPath $r).Path }
     }
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found at $vswhere" }
-    $vsRoot = (& $vswhere -latest -prerelease -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath | Select-Object -First 1)
-    if (-not $vsRoot) { $vsRoot = (& $vswhere -latest -prerelease -products * -property installationPath | Select-Object -First 1) }
-    if (-not $vsRoot) { throw "No Visual Studio with VC tools found via vswhere" }
-    $verFile = Join-Path $vsRoot 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
-    if (-not (Test-Path -LiteralPath $verFile)) { throw "VC tools version file not found at $verFile" }
-    $ver = (Get-Content -LiteralPath $verFile -Raw).Trim()
-    $root = Join-Path $vsRoot "VC\Tools\MSVC\$ver\lib"
+    # Get-MsvcTool already validated the VS install; re-derive the lib path from it.
+    $linkExePath = Get-MsvcTool 'link.exe'   # e.g. ...\bin\Hostarm64\arm64\link.exe
+    # Strip \arm64, \Hostarm64, \bin to reach the MSVC version root
+    $vcVersionRoot = Split-Path (Split-Path (Split-Path (Split-Path $linkExePath)))
+    $root = Join-Path $vcVersionRoot 'lib'
     if (-not (Test-Path -LiteralPath $root)) { throw "MSVC lib root not found at $root" }
     return $root
 }
@@ -118,22 +103,27 @@ function Get-SdkLibRoot {
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$linkExe    = Get-MsvcLinkExe
+$linkExe     = Get-MsvcTool 'link.exe'
+$dumpbinExe  = Get-MsvcTool 'dumpbin.exe'
 $msvcLibRoot = Get-MsvcLibRoot
 $sdkLibRoot  = Get-SdkLibRoot
 
 Write-Host "==> MSVC link.exe:    $linkExe"
+Write-Host "==> MSVC dumpbin.exe: $dumpbinExe"
 Write-Host "==> MSVC lib root:    $msvcLibRoot"
 Write-Host "==> Windows SDK root: $sdkLibRoot"
 
-# Generate a DEF file from a per-arch DLL via `llvm-readobj --coff-exports`.
+# Generate a DEF file from a per-arch DLL via `dumpbin /exports`.
+# Output format includes lines like:
+#   <ordinal>  <hint>  <RVA>  <name>
+# We match the name in the 4th field of export lines.
 function New-DefFromDll {
     param([string]$Dll, [string]$DefPath)
-    $names = & $readobjExe --coff-exports $Dll |
-        Select-String '^\s*Name: (\S+)$' |
+    $names = & $dumpbinExe /exports $Dll 2>&1 |
+        Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)' |
         ForEach-Object { $_.Matches[0].Groups[1].Value }
     if (-not $names) {
-        throw "No exports found in $Dll via $readobjExe"
+        throw "No exports found in $Dll via $dumpbinExe"
     }
     $lines = @('EXPORTS') + ($names | ForEach-Object { "    $_" })
     Set-Content -Path $DefPath -Value $lines -Encoding ASCII

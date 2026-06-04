@@ -190,7 +190,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
-          components: llvm-tools
 
       - name: Build merged ARM64X DLL
         shell: pwsh
