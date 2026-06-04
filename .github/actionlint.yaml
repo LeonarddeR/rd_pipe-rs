@@ -1,0 +1,7 @@
+self-hosted-runner:
+  labels:
+    - windows-11-arm
+
+config-variables: null
+
+paths:
