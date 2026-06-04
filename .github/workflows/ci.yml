@@ -192,6 +192,16 @@ jobs:
           toolchain: nightly
           components: llvm-tools
 
+      # Windows SDK >= 10.0.28000 is required: older SDKs make the ARM64X
+      # link pull msvcrt.lib's vcstartup glue, producing a DLL that crashes
+      # at load. See arm64x/build_merged.ps1 for details.
+      - name: Install Windows SDK 10.0.28000
+        shell: pwsh
+        run: |
+          winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
+            --accept-package-agreements --accept-source-agreements `
+            --disable-interactivity --silent
+
       - name: Build merged ARM64X DLL
         shell: pwsh
         run: |

@@ -72,29 +72,25 @@ $defArm64ec = Join-Path $OutDir 'rd_pipe.arm64ec.def'
 New-DefFromDll -Dll $Arm64Dll   -DefPath $defArm64
 New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
 
-# Windows SDK / CRT libs needed for the link to succeed:
-# - kernel32.lib     : __chkstk, _tls_index/_tls_used, baseline Win32
-# - msvcrt.lib       : dynamic-CRT import lib; _CxxThrowException,
-#                      __CxxFrameHandler3, and the vcstartup DLL glue
-#                      (utility.obj / _DllMainCRTStartup) that newer
-#                      toolchains pull in.
-# - ucrt.lib         : memcpy/memset/memmove/memcmp, wcslen, etc.
-# - vcruntime.lib    : softintrin / icall helpers (ARM64EC)
-# - libvcruntime.lib : STATIC vcruntime. Defines __vcrt_initialize and the
-#                      __vcrt_* thread attach/detach helpers that
-#                      msvcrt.lib(utility.obj) references but that the
-#                      *dynamic* import libs do not define.
-# - libucrt.lib      : STATIC UCRT. Defines __acrt_initialize,
-#                      _is_c_termination_complete and the __acrt_* helpers,
-#                      likewise referenced by the vcstartup glue.
-# - uuid.lib         : pulled via a /defaultlib directive emitted by the
-#                      libvcruntime objects.
-# msvcrt + the dynamic ucrt/vcruntime are listed before their static
-# counterparts so that, under /force:multiple, the dynamic CRT definitions
-# win and the static libs only supply the otherwise-undefined vcstartup
-# init helpers. All other Win32 imports (advapi32, bcrypt, ntdll, ole32,
-# oleaut32, userenv, ws2_32, synchronization) come in transitively via the
+# Windows SDK / CRT import libs needed for the link to succeed:
+# - kernel32.lib  : __chkstk, _tls_index/_tls_used, baseline Win32
+# - msvcrt.lib    : _CxxThrowException, __CxxFrameHandler3 (ARM64EC)
+# - ucrt.lib      : memcpy/memset/memmove/memcmp, wcslen, etc.
+# - vcruntime.lib : softintrin / icall helpers (ARM64EC)
+# All other Win32 imports (advapi32, bcrypt, ntdll, ole32, oleaut32,
+# userenv, ws2_32, synchronization) are pulled in transitively via the
 # Rust staticlibs' raw_dylib stubs.
+#
+# These are the DYNAMIC-CRT import libs only. We deliberately do NOT add
+# the static libvcruntime.lib / libucrt.lib: on Windows SDK 10.0.26100 the
+# linker pulls msvcrt.lib's vcstartup DLL glue (utility.obj), which then
+# references the static __vcrt_initialize / __acrt_initialize helpers and
+# forces those static libs in. That links, but mixing the static CRT
+# startup with the dynamic CRT double-initialises the runtime and the
+# merged DLL crashes at load (0xc0000005). Windows SDK >= 10.0.28000 does
+# not pull utility.obj, so the dynamic-only link is both correct and
+# runtime-safe. The CI job installs that SDK; Get-SdkLibRoot prefers the
+# highest-versioned SDK present.
 #
 # An /machine:arm64x image has TWO symbol namespaces: a native ARM64 view
 # and an ARM64EC (x64-ABI) view. Each view must be satisfied by CRT libs
@@ -104,15 +100,7 @@ New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
 # errors. We therefore locate the ARM64 *and* x64 flavours of each lib via
 # the installed VS toolset + Windows SDK and pass them by full path, so the
 # link is self-contained and does not depend on LIB.
-$crtLibNames = @(
-    'kernel32.lib',
-    'msvcrt.lib',
-    'ucrt.lib',
-    'vcruntime.lib',
-    'libvcruntime.lib',
-    'libucrt.lib',
-    'uuid.lib'
-)
+$crtLibNames = @('kernel32.lib', 'msvcrt.lib', 'ucrt.lib', 'vcruntime.lib')
 
 # Resolve the VS MSVC tools lib root (…\VC\Tools\MSVC\<ver>\lib) and the
 # Windows SDK lib root (…\Lib\<ver>) for the current machine.
@@ -146,13 +134,21 @@ function Get-SdkLibRoot {
     if (-not $kitsRoot) { $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10' }
     $libBase = Join-Path $kitsRoot 'Lib'
     if (-not (Test-Path -LiteralPath $libBase)) { throw "Windows SDK Lib base not found at $libBase" }
+    # Windows SDK < 10.0.28000 makes the linker pull msvcrt.lib's utility.obj
+    # (vcstartup DLL glue), which forces the static CRT startup in and yields
+    # a merged DLL that crashes at load. Require >= 10.0.28000.
+    $minSdk = [version]'10.0.28000.0'
     # Highest-versioned SDK that ships both arm64 and x64 ucrt libs.
     $sdk = Get-ChildItem -LiteralPath $libBase -Directory |
         Where-Object { (Test-Path (Join-Path $_.FullName 'ucrt\arm64')) -and
-                       (Test-Path (Join-Path $_.FullName 'ucrt\x64')) } |
+                       (Test-Path (Join-Path $_.FullName 'ucrt\x64')) -and
+                       ([version]$_.Name -ge $minSdk) } |
         Sort-Object { [version]$_.Name } -Descending |
         Select-Object -First 1
-    if (-not $sdk) { throw "No Windows SDK with both arm64 and x64 ucrt libs under $libBase" }
+    if (-not $sdk) {
+        throw "No Windows SDK >= $minSdk (with arm64 + x64 ucrt libs) under $libBase. " +
+              "Install one, e.g. 'winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget'."
+    }
     return $sdk.FullName
 }
 
@@ -163,16 +159,13 @@ Write-Host "==> Windows SDK lib root: $sdkLibRoot"
 
 # Map each bare CRT lib to its real location per architecture. The native
 # ARM64 view uses the arm64 libs; the ARM64EC view uses the x64 (x64-ABI)
-# libs. kernel32/uuid live under the SDK 'um' dir, ucrt/libucrt under the
-# SDK 'ucrt' dir, and msvcrt/vcruntime/libvcruntime under the MSVC tools
-# lib dir.
+# libs. kernel32 lives under the SDK 'um' dir, ucrt under the SDK 'ucrt'
+# dir, and msvcrt/vcruntime under the MSVC tools lib dir.
 function Resolve-CrtLib {
     param([string]$Name, [string]$Arch)
     switch ($Name) {
         'kernel32.lib' { $p = Join-Path $sdkLibRoot  "um\$Arch\$Name" }
-        'uuid.lib'     { $p = Join-Path $sdkLibRoot  "um\$Arch\$Name" }
         'ucrt.lib'     { $p = Join-Path $sdkLibRoot  "ucrt\$Arch\$Name" }
-        'libucrt.lib'  { $p = Join-Path $sdkLibRoot  "ucrt\$Arch\$Name" }
         default        { $p = Join-Path $msvcLibRoot "$Arch\$Name" }
     }
     if (-not (Test-Path -LiteralPath $p)) { throw "CRT lib not found: $p" }
