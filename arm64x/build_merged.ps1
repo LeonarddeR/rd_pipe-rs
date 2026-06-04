@@ -7,11 +7,16 @@
 #   -Arm64ecDll : path to target\arm64ec-pc-windows-msvc\release\rd_pipe.dll
 #   -OutDir     : directory to place the merged rd_pipe.dll
 #
-# Final link uses /MACHINE:ARM64X via rust-lld from the active rustc
-# toolchain. Explicit Windows SDK import libs are passed because Rust
-# staticlibs do not embed them; they reference SDK symbols via
-# raw_dylib stubs that the ARM64X linker cannot resolve without proper
-# import libraries.
+# Final link uses /MACHINE:ARM64X via MSVC link.exe (discovered from the
+# active VS installation via vswhere), which handles the ARM64X TLS directory
+# correctly. lld-link is NOT used because it corrupts the EC view's TLS
+# (_tls_used/_tls_index/TLS-callback directory) when merging two full Rust
+# staticlibs.
+#
+# Import libs are passed explicitly by full path for both the ARM64 (native)
+# and x64 (EC) views because an /machine:arm64x link needs import libraries
+# for both architectures. Bare lib names resolved from ambient LIB only cover
+# one architecture.
 #
 # DEF files are generated on the fly from the per-arch DLLs via
 # llvm-readobj --coff-exports so the merged binary's export table is the
@@ -30,83 +35,48 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Resolve rust-lld + llvm-readobj bundled with the active rustc toolchain.
-# llvm-readobj requires the `llvm-tools` rustup component.
+# Resolve llvm-readobj bundled with the active rustc toolchain.
+# Requires the `llvm-tools` rustup component.
 $sysroot = (& rustc --print sysroot).Trim()
 $hostTriple = (& rustc -vV | Select-String '^host:').ToString().Split(' ', 2)[1].Trim()
 $rustlibBin = Join-Path $sysroot "lib\rustlib\$hostTriple\bin"
-$linkExe = Join-Path $rustlibBin 'gcc-ld\lld-link.exe'
 $readobjExe = Join-Path $rustlibBin 'llvm-readobj.exe'
-if (-not (Test-Path -LiteralPath $linkExe)) {
-    throw "rust-lld not found at $linkExe"
-}
 if (-not (Test-Path -LiteralPath $readobjExe)) {
     throw "llvm-readobj not found at $readobjExe (install rustup component 'llvm-tools')"
 }
 
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-
-# Generate a DEF file from a per-arch DLL via `llvm-readobj --coff-exports`.
-# Output format:
-#   Export {
-#     Ordinal: <n>
-#     Name: <symbol>
-#     RVA: 0x<hex>
-#   }
-# We extract every `Name:` line. Order doesn't matter for /def.
-function New-DefFromDll {
-    param([string]$Dll, [string]$DefPath)
-    $names = & $readobjExe --coff-exports $Dll |
-        Select-String '^\s*Name: (\S+)$' |
-        ForEach-Object { $_.Matches[0].Groups[1].Value }
-    if (-not $names) {
-        throw "No exports found in $Dll via $readobjExe"
+# Resolve MSVC link.exe. We prefer the ARM64-hosted linker so the process
+# itself runs natively; fall back to x64-hosted which works under WOW64.
+# Uses VCToolsInstallDir env (set by vcvars) or falls back to vswhere.
+function Get-MsvcLinkExe {
+    $vcRoot = $null
+    if ($env:VCToolsInstallDir) {
+        $vcRoot = $env:VCToolsInstallDir.TrimEnd('\/')
+    } else {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+        $vsRoot = (& $vswhere -latest -prerelease -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1)
+        if (-not $vsRoot) { $vsRoot = (& $vswhere -latest -prerelease -products * -property installationPath | Select-Object -First 1) }
+        if (-not $vsRoot) { throw "No Visual Studio with VC tools found via vswhere" }
+        $verFile = Join-Path $vsRoot 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+        if (-not (Test-Path -LiteralPath $verFile)) { throw "VC tools version file not found at $verFile" }
+        $ver = (Get-Content -LiteralPath $verFile -Raw).Trim()
+        $vcRoot = Join-Path $vsRoot "VC\Tools\MSVC\$ver"
     }
-    $lines = @('EXPORTS') + ($names | ForEach-Object { "    $_" })
-    Set-Content -Path $DefPath -Value $lines -Encoding ASCII
-    Write-Host "==> Generated $DefPath ($($names.Count) exports): $($names -join ', ')"
+    foreach ($hostDir in 'Hostarm64\arm64', 'HostARM64\arm64', 'Hostx64\x64') {
+        $p = Join-Path $vcRoot "bin\$hostDir\link.exe"
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    throw "MSVC link.exe not found under $vcRoot\bin"
 }
 
-$defArm64 = Join-Path $OutDir 'rd_pipe.arm64.def'
-$defArm64ec = Join-Path $OutDir 'rd_pipe.arm64ec.def'
-New-DefFromDll -Dll $Arm64Dll   -DefPath $defArm64
-New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
-
-# Windows SDK / CRT import libs needed for the link to succeed:
-# - kernel32.lib  : __chkstk, _tls_index/_tls_used, baseline Win32
-# - msvcrt.lib    : _CxxThrowException, __CxxFrameHandler3 (ARM64EC)
-# - ucrt.lib      : memcpy/memset/memmove/memcmp, wcslen, etc.
-# - vcruntime.lib : softintrin / icall helpers (ARM64EC)
-# All other Win32 imports (advapi32, bcrypt, ntdll, ole32, oleaut32,
-# userenv, ws2_32, synchronization) are pulled in transitively via the
-# Rust staticlibs' raw_dylib stubs.
-#
-# These are the DYNAMIC-CRT import libs only. We deliberately do NOT add
-# the static libvcruntime.lib / libucrt.lib: on Windows SDK 10.0.26100 the
-# linker pulls msvcrt.lib's vcstartup DLL glue (utility.obj), which then
-# references the static __vcrt_initialize / __acrt_initialize helpers and
-# forces those static libs in. That links, but mixing the static CRT
-# startup with the dynamic CRT double-initialises the runtime and the
-# merged DLL crashes at load (0xc0000005). Windows SDK >= 10.0.28000 does
-# not pull utility.obj, so the dynamic-only link is both correct and
-# runtime-safe. The CI job installs that SDK; Get-SdkLibRoot prefers the
-# highest-versioned SDK present.
-#
-# An /machine:arm64x image has TWO symbol namespaces: a native ARM64 view
-# and an ARM64EC (x64-ABI) view. Each view must be satisfied by CRT libs
-# of the matching architecture. Passing these by bare name only resolves
-# them from the ambient LIB env, which holds a single architecture, so one
-# view ends up with "undefined symbol ... (native symbol)" / "(EC symbol)"
-# errors. We therefore locate the ARM64 *and* x64 flavours of each lib via
-# the installed VS toolset + Windows SDK and pass them by full path, so the
-# link is self-contained and does not depend on LIB.
-$crtLibNames = @('kernel32.lib', 'msvcrt.lib', 'ucrt.lib', 'vcruntime.lib')
-
-# Resolve the VS MSVC tools lib root (…\VC\Tools\MSVC\<ver>\lib) and the
-# Windows SDK lib root (…\Lib\<ver>) for the current machine.
 function Get-MsvcLibRoot {
+    $vcRoot = $null
     if ($env:VCToolsInstallDir) {
-        $r = Join-Path $env:VCToolsInstallDir 'lib'
+        $vcRoot = $env:VCToolsInstallDir.TrimEnd('\/')
+        $r = Join-Path $vcRoot 'lib'
         if (Test-Path -LiteralPath $r) { return (Resolve-Path -LiteralPath $r).Path }
     }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -134,75 +104,171 @@ function Get-SdkLibRoot {
     if (-not $kitsRoot) { $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10' }
     $libBase = Join-Path $kitsRoot 'Lib'
     if (-not (Test-Path -LiteralPath $libBase)) { throw "Windows SDK Lib base not found at $libBase" }
-    # Windows SDK < 10.0.28000 makes the linker pull msvcrt.lib's utility.obj
-    # (vcstartup DLL glue), which forces the static CRT startup in and yields
-    # a merged DLL that crashes at load. Require >= 10.0.28000.
-    $minSdk = [version]'10.0.28000.0'
-    # Highest-versioned SDK that ships both arm64 and x64 ucrt libs.
+    # Pick the highest-versioned SDK that ships both arm64 and x64 ucrt/um libs.
     $sdk = Get-ChildItem -LiteralPath $libBase -Directory |
-        Where-Object { (Test-Path (Join-Path $_.FullName 'ucrt\arm64')) -and
-                       (Test-Path (Join-Path $_.FullName 'ucrt\x64')) -and
-                       ([version]$_.Name -ge $minSdk) } |
+        Where-Object { (Test-Path (Join-Path $_.FullName 'um\arm64')) -and
+                       (Test-Path (Join-Path $_.FullName 'um\x64')) } |
         Sort-Object { [version]$_.Name } -Descending |
         Select-Object -First 1
     if (-not $sdk) {
-        throw "No Windows SDK >= $minSdk (with arm64 + x64 ucrt libs) under $libBase. " +
-              "Install one, e.g. 'winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget'."
+        throw "No Windows SDK with arm64 + x64 um libs found under $libBase."
     }
     return $sdk.FullName
 }
 
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$linkExe    = Get-MsvcLinkExe
 $msvcLibRoot = Get-MsvcLibRoot
-$sdkLibRoot = Get-SdkLibRoot
-Write-Host "==> MSVC lib root: $msvcLibRoot"
-Write-Host "==> Windows SDK lib root: $sdkLibRoot"
+$sdkLibRoot  = Get-SdkLibRoot
 
-# Map each bare CRT lib to its real location per architecture. The native
-# ARM64 view uses the arm64 libs; the ARM64EC view uses the x64 (x64-ABI)
-# libs. kernel32 lives under the SDK 'um' dir, ucrt under the SDK 'ucrt'
-# dir, and msvcrt/vcruntime under the MSVC tools lib dir.
-function Resolve-CrtLib {
-    param([string]$Name, [string]$Arch)
-    switch ($Name) {
-        'kernel32.lib' { $p = Join-Path $sdkLibRoot  "um\$Arch\$Name" }
-        'ucrt.lib'     { $p = Join-Path $sdkLibRoot  "ucrt\$Arch\$Name" }
-        default        { $p = Join-Path $msvcLibRoot "$Arch\$Name" }
+Write-Host "==> MSVC link.exe:    $linkExe"
+Write-Host "==> MSVC lib root:    $msvcLibRoot"
+Write-Host "==> Windows SDK root: $sdkLibRoot"
+
+# Generate a DEF file from a per-arch DLL via `llvm-readobj --coff-exports`.
+function New-DefFromDll {
+    param([string]$Dll, [string]$DefPath)
+    $names = & $readobjExe --coff-exports $Dll |
+        Select-String '^\s*Name: (\S+)$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value }
+    if (-not $names) {
+        throw "No exports found in $Dll via $readobjExe"
     }
-    if (-not (Test-Path -LiteralPath $p)) { throw "CRT lib not found: $p" }
-    return $p
+    $lines = @('EXPORTS') + ($names | ForEach-Object { "    $_" })
+    Set-Content -Path $DefPath -Value $lines -Encoding ASCII
+    Write-Host "==> Generated $DefPath ($($names.Count) exports): $($names -join ', ')"
 }
 
-$sdkLibs = @()
-foreach ($arch in 'arm64', 'x64') {
-    foreach ($name in $crtLibNames) {
-        $sdkLibs += (Resolve-CrtLib -Name $name -Arch $arch)
+$defArm64   = Join-Path $OutDir 'rd_pipe.arm64.def'
+$defArm64ec = Join-Path $OutDir 'rd_pipe.arm64ec.def'
+New-DefFromDll -Dll $Arm64Dll   -DefPath $defArm64
+New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
+
+# Import libs needed for the /machine:arm64x link.
+# Mirror exactly what rustc passes for each architecture (from `cargo rustc -- --print link-args`):
+#   ARM64 (native view): kernel32 ntdll userenv ws2_32 dbghelp  + /defaultlib:msvcrt
+#   ARM64EC (EC view):   kernel32 ntdll userenv ws2_32 dbghelp  + /defaultlib:msvcrt + softintrin
+#
+# An ARM64X link has TWO symbol namespaces; we need CRT + SDK libs for BOTH:
+#   - MSVC arm64\ for both views (msvcrt, vcruntime, ucrt-style helpers)
+#   - SDK ucrt\arm64  for the native view
+#   - SDK ucrt\arm64ec (or x64 fallback) for the EC view
+#   - SDK um\arm64    for the native view
+#   - SDK um\arm64ec  (or x64 fallback) for the EC view
+#   - softintrin (EC/arm64ec only)
+#
+# Note: __icall_helper_arm64ec lives in arm64\msvcrt.lib (not x64 or arm64ec).
+# Note: SDK 10.0.28000 does not have a um\arm64ec dir; fall back to um\x64.
+function Resolve-LibForView {
+    param([string]$Name, [string]$Arch)  # Arch = 'arm64' | 'arm64ec'
+    # CRT libs from MSVC: always use arm64 dir (same helpers serve both views)
+    if ($Name -match '^(msvcrt|vcruntime)\.lib$') {
+        $p = Join-Path $msvcLibRoot "arm64\$Name"
+        if (-not (Test-Path -LiteralPath $p)) { throw "MSVC lib not found: $p" }
+        return $p
     }
+    # SDK ucrt
+    if ($Name -match '^ucrt\.lib$') {
+        foreach ($a in $Arch, 'x64') {
+            $p = Join-Path $sdkLibRoot "ucrt\$a\$Name"
+            if (Test-Path -LiteralPath $p) { return $p }
+        }
+        throw "ucrt.lib not found for arch $Arch"
+    }
+    # SDK um libs (kernel32, ntdll, etc.)
+    foreach ($a in $Arch, 'x64', 'arm64') {
+        $dir = Join-Path $sdkLibRoot "um\$a"
+        if (Test-Path -LiteralPath $dir) {
+            $found = Get-ChildItem $dir -Filter $Name -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+            if ($found) { return $found }
+        }
+    }
+    throw "SDK um lib $Name not found for arch $Arch"
 }
-Write-Host "==> CRT libs (arm64 native + x64 EC):"
-$sdkLibs | ForEach-Object { Write-Host "    $_" }
+
+$crtLibNames = @('vcruntime.lib')
+$umLibNames  = @('kernel32.Lib', 'ntdll.lib', 'UserEnv.Lib', 'WS2_32.Lib', 'DbgHelp.Lib')
+
+$importLibs = @()
+foreach ($name in ($crtLibNames + $umLibNames)) {
+    $importLibs += (Resolve-LibForView -Name $name -Arch 'arm64')
+}
+foreach ($name in ($crtLibNames + $umLibNames)) {
+    $importLibs += (Resolve-LibForView -Name $name -Arch 'arm64ec')
+}
+# softintrin is EC (arm64ec/x64-ABI) only - SDK um x64
+$softintrin = Join-Path $sdkLibRoot 'um\x64\softintrin.lib'
+if (-not (Test-Path -LiteralPath $softintrin)) {
+    $softintrin = Join-Path $sdkLibRoot 'um\arm64\softintrin.lib'
+    if (-not (Test-Path -LiteralPath $softintrin)) { throw "softintrin.lib not found" }
+}
+$importLibs += $softintrin
+
+# arm64\msvcrt.lib provides __icall_helper_arm64ec (needed by EC raw_dylib stubs)
+# but also contains dll_dllmain_stub.obj which would override our DllMain if passed
+# as an explicit input. Pass it via /DEFAULTLIB: so it is lower priority than the
+# explicit staticlibs: our DllMain objects from rd_pipe.lib win, dll_dllmain_stub
+# becomes the second definition (ignored by /force:multiple).
+$msvcrtArm64Lib  = Join-Path $msvcLibRoot 'arm64\msvcrt.lib'
+$msvcrtX64Lib    = Join-Path $msvcLibRoot 'x64\msvcrt.lib'
+if (-not (Test-Path -LiteralPath $msvcrtArm64Lib)) { throw "arm64\msvcrt.lib not found at $msvcrtArm64Lib" }
+if (-not (Test-Path -LiteralPath $msvcrtX64Lib))   { throw "x64\msvcrt.lib not found at $msvcrtX64Lib" }
+
+Write-Host "==> Import libs (arm64 native + arm64ec EC):"
+$importLibs | ForEach-Object { Write-Host "    $_" }
 
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
 
-Write-Host "==> Linking ARM64X merged DLL with $linkExe"
-# /entry:DllMain ensures the loader calls our Rust DllMain rather than the
-# msvcrt stub (msvcrt provides a no-op _DllMainCRTStartup; we want our own).
-# /force:multiple resolves the resulting duplicate-symbol diagnostic in
-# favor of the input listed first (the Rust staticlibs).
+Write-Host "==> Linking ARM64X merged DLL with MSVC link.exe"
 # /defArm64Native + /def supply the export tables for the ARM64 native and
 # ARM64EC views respectively. Each DEF is generated from the matching
 # per-arch DLL so the merged binary exposes the exact union of exports
 # rustc emitted for each arch.
+#
+# /force:multiple: resolves duplicate DllMain symbols. The merged link has two
+# DllMain definitions: one from each per-arch staticlib AND a stub from
+# msvcrt.lib(dll_dllmain_stub.obj). The stub wins via /force:multiple but that
+# is intentional: the stub is the CRT-wrapped DllMain — it calls
+# dllmain_crt_process_attach which chains through _pRawDllMain to user code.
+# Our actual DllMain (tracing init + Tokio runtime) runs via _pRawDllMain.
+#
+# arm64\msvcrt.lib is passed after the staticlibs via /NODEFAULTLIB + explicit
+# path so the linker sees our DllMain objects before the stub. msvcrt.lib is
+# still needed as an explicit input because arm64\msvcrt.lib provides
+# __icall_helper_arm64ec (used by the EC view's raw_dylib import stubs) and
+# arm64\vcruntime.lib provides __CxxFrameHandler3/__chkstk.
+#
+# /LIBPATH: dirs allow the .drectve /defaultlib:... entries baked into the
+# staticlibs to resolve without vcvars being active.
+$libpathMsvcArm64  = Join-Path $msvcLibRoot 'arm64'
+$libpathMsvcX64    = Join-Path $msvcLibRoot 'x64'
+$libpathUcrtArm64  = Join-Path $sdkLibRoot 'ucrt\arm64'
+$libpathUcrtArm64ec= Join-Path $sdkLibRoot 'ucrt\arm64ec'
+$libpathUcrtX64    = Join-Path $sdkLibRoot 'ucrt\x64'
+$libpathUmArm64    = Join-Path $sdkLibRoot 'um\arm64'
+$libpathUmX64      = Join-Path $sdkLibRoot 'um\x64'
+
 & $linkExe `
     /dll /machine:arm64x /nologo `
     /noimplib `
-    /entry:DllMain `
     /force:multiple `
+    "/NODEFAULTLIB:msvcrt" `
+    "/LIBPATH:$libpathMsvcArm64" `
+    "/LIBPATH:$libpathMsvcX64" `
+    "/LIBPATH:$libpathUcrtArm64" `
+    "/LIBPATH:$libpathUcrtArm64ec" `
+    "/LIBPATH:$libpathUcrtX64" `
+    "/LIBPATH:$libpathUmArm64" `
+    "/LIBPATH:$libpathUmX64" `
     "/defArm64Native:$defArm64" `
     "/def:$defArm64ec" `
     "/out:$outDll" `
     $Arm64Lib $Arm64ecLib `
-    @sdkLibs
-if ($LASTEXITCODE -ne 0) { throw "rust-lld failed" }
+    @importLibs `
+    $msvcrtArm64Lib $msvcrtX64Lib
+if ($LASTEXITCODE -ne 0) { throw "MSVC link.exe failed with exit code $LASTEXITCODE" }
 
 Write-Host "==> Merged ARM64X DLL built: $outDll"
 Get-Item $outDll | Format-List FullName, Length, LastWriteTime
