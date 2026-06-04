@@ -28,7 +28,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: stable
           components: rustfmt
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
@@ -43,12 +43,12 @@ jobs:
         include:
           - name: x86
             target: i686-pc-windows-msvc
-            runner: windows-2025
+            runner: windows-2025-vs2026
             artifact: rd_pipe-x86
             toolchain: stable
           - name: x64
             target: x86_64-pc-windows-msvc
-            runner: windows-2025
+            runner: windows-2025-vs2026
             artifact: rd_pipe-x64
             toolchain: stable
           - name: arm64
@@ -114,7 +114,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     strategy:
       fail-fast: false
       matrix:
@@ -170,7 +170,7 @@ jobs:
   build-arm64x:
     name: Build ARM64X merged DLL
     needs: build
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
 
