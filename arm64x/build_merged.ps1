@@ -43,12 +43,23 @@ $sdkLib  = Join-Path $env:WindowsSdkDir.TrimEnd('\/') "Lib\$($env:WindowsSDKVers
 Write-Host "==> MSVC lib root:    $msvcLib"
 Write-Host "==> Windows SDK root: $sdkLib"
 
+# dumpbin.exe lives in Hostx64\x64 — not always on PATH when vcvars is set up
+# for a cross-compilation target (e.g. vcvarsall x64_arm64 only prepends Hostx64\arm64).
+$dumpbinExe = (Get-Command dumpbin -ErrorAction SilentlyContinue)?.Source
+if (-not $dumpbinExe) {
+    $dumpbinExe = Join-Path $env:VCToolsInstallDir "bin\HostX64\x64\dumpbin.exe"
+    if (-not (Test-Path $dumpbinExe)) {
+        throw "dumpbin.exe not found on PATH or at $dumpbinExe"
+    }
+    Write-Host "==> dumpbin: $dumpbinExe (resolved via VCToolsInstallDir)"
+}
+
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # Generate a DEF file from a per-arch DLL via dumpbin /exports.
 function New-DefFromDll {
     param([string]$Dll, [string]$DefPath)
-    $names = dumpbin /exports $Dll 2>&1 |
+    $names = & $dumpbinExe /exports $Dll 2>&1 |
         Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)' |
         ForEach-Object { $_.Matches[0].Groups[1].Value }
     if (-not $names) { throw "No exports found in $Dll" }
