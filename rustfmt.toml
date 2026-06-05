@@ -1,0 +1,7 @@
+edition = "2024"
+hard_tabs = true
+use_small_heuristics = "Max"
+match_arm_leading_pipes = "Never"
+merge_derives = true
+remove_nested_parens = true
+use_field_init_shorthand = true

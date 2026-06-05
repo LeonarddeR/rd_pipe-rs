@@ -18,30 +18,30 @@ use std::collections::HashSet;
 use std::fmt;
 use std::{io::ErrorKind::WouldBlock, sync::Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
-    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    time::{Duration, sleep},
+	io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
+	net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+	time::{Duration, sleep},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
-    Win32::{
-        Foundation::E_UNEXPECTED,
-        System::RemoteDesktop::{
-            IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
-            IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-            IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
-        },
-    },
-    core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
+	Win32::{
+		Foundation::E_UNEXPECTED,
+		System::RemoteDesktop::{
+			IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
+			IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
+			IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
+		},
+	},
+	core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
 };
 use windows_core::{BOOL, OutRef, Owned};
 use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
 use crate::{
-    ASYNC_RUNTIME,
-    security_descriptor::{get_logon_sid, security_attributes_from_sddl},
+	ASYNC_RUNTIME,
+	security_descriptor::{get_logon_sid, security_attributes_from_sddl},
 };
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
@@ -52,139 +52,137 @@ const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
 pub struct RdPipePlugin;
 
 impl RdPipePlugin {
-    pub fn new() -> Self {
-        Self
-    }
+	pub fn new() -> Self {
+		Self
+	}
 
-    #[instrument]
-    fn create_listener(
-        &self,
-        channel_mgr: &IWTSVirtualChannelManager,
-        channel_name: String,
-    ) -> Result<IWTSListener> {
-        debug!("Creating listener with name {}", channel_name);
-        let callback: IWTSListenerCallback =
-            RdPipeListenerCallback::new(channel_name.clone()).into();
-        unsafe {
-            channel_mgr.CreateListener(
-                PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
-                0,
-                &callback,
-            )
-        }
-    }
+	#[instrument]
+	fn create_listener(
+		&self,
+		channel_mgr: &IWTSVirtualChannelManager,
+		channel_name: String,
+	) -> Result<IWTSListener> {
+		debug!("Creating listener with name {}", channel_name);
+		let callback: IWTSListenerCallback =
+			RdPipeListenerCallback::new(channel_name.clone()).into();
+		unsafe {
+			channel_mgr.CreateListener(
+				PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
+				0,
+				&callback,
+			)
+		}
+	}
 
-    #[instrument]
-    fn get_channel_names_from_registry(parent_key: &Key) -> windows_core::Result<Vec<String>> {
-        let sub_key = parent_key.open(REG_PATH)?;
-        sub_key.get_multi_string(REG_VALUE_CHANNEL_NAMES)
-    }
+	#[instrument]
+	fn get_channel_names_from_registry(parent_key: &Key) -> windows_core::Result<Vec<String>> {
+		let sub_key = parent_key.open(REG_PATH)?;
+		sub_key.get_multi_string(REG_VALUE_CHANNEL_NAMES)
+	}
 }
 
 impl fmt::Debug for RdPipePlugin_Impl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RdPipePlugin_Impl").finish()
-    }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.debug_struct("RdPipePlugin_Impl").finish()
+	}
 }
 
 impl IWTSPlugin_Impl for RdPipePlugin_Impl {
-    #[instrument(skip(pchannelmgr))]
-    fn Initialize(
-        &self,
-        pchannelmgr: windows_core::Ref<'_, IWTSVirtualChannelManager>,
-    ) -> Result<()> {
-        let channel_mgr = match pchannelmgr.as_ref() {
-            Some(m) => m,
-            None => {
-                error!("No pchannelmgr given when initializing");
-                return Err(Error::from(E_UNEXPECTED));
-            }
-        };
-        let mut channels: Vec<String> = Vec::new();
-        channels.extend(
-            RdPipePlugin::get_channel_names_from_registry(CURRENT_USER).unwrap_or_default(),
-        );
-        channels.extend(
-            RdPipePlugin::get_channel_names_from_registry(LOCAL_MACHINE).unwrap_or_default(),
-        );
-        let channels: HashSet<String> = channels.into_iter().filter(|s| !s.is_empty()).collect();
-        if channels.is_empty() {
-            error!("No channels in registry");
-            return Err(Error::from(E_UNEXPECTED));
-        }
-        for channel_name in channels {
-            self.create_listener(channel_mgr, channel_name)?;
-        }
-        Ok(())
-    }
+	#[instrument(skip(pchannelmgr))]
+	fn Initialize(
+		&self,
+		pchannelmgr: windows_core::Ref<'_, IWTSVirtualChannelManager>,
+	) -> Result<()> {
+		let channel_mgr = match pchannelmgr.as_ref() {
+			Some(m) => m,
+			None => {
+				error!("No pchannelmgr given when initializing");
+				return Err(Error::from(E_UNEXPECTED));
+			}
+		};
+		let mut channels: Vec<String> = Vec::new();
+		channels.extend(
+			RdPipePlugin::get_channel_names_from_registry(CURRENT_USER).unwrap_or_default(),
+		);
+		channels.extend(
+			RdPipePlugin::get_channel_names_from_registry(LOCAL_MACHINE).unwrap_or_default(),
+		);
+		let channels: HashSet<String> = channels.into_iter().filter(|s| !s.is_empty()).collect();
+		if channels.is_empty() {
+			error!("No channels in registry");
+			return Err(Error::from(E_UNEXPECTED));
+		}
+		for channel_name in channels {
+			self.create_listener(channel_mgr, channel_name)?;
+		}
+		Ok(())
+	}
 
-    fn Connected(&self) -> Result<()> {
-        info!("Client connected");
-        Ok(())
-    }
+	fn Connected(&self) -> Result<()> {
+		info!("Client connected");
+		Ok(())
+	}
 
-    fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
-        info!("Client disconnected with {}", dwdisconnectcode);
-        Ok(())
-    }
+	fn Disconnected(&self, dwdisconnectcode: u32) -> Result<()> {
+		info!("Client disconnected with {}", dwdisconnectcode);
+		Ok(())
+	}
 
-    fn Terminated(&self) -> Result<()> {
-        info!("Client terminated");
-        Ok(())
-    }
+	fn Terminated(&self) -> Result<()> {
+		info!("Client terminated");
+		Ok(())
+	}
 }
 
 #[derive(Debug)]
 #[implement(IWTSListenerCallback)]
 pub struct RdPipeListenerCallback {
-    name: String,
+	name: String,
 }
 
 impl RdPipeListenerCallback {
-    pub fn new(name: String) -> Self {
-        Self { name }
-    }
+	pub fn new(name: String) -> Self {
+		Self { name }
+	}
 }
 
 impl fmt::Debug for RdPipeListenerCallback_Impl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RdPipeListenerCallback_Impl")
-            .field("name", &self.name)
-            .finish()
-    }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.debug_struct("RdPipeListenerCallback_Impl").field("name", &self.name).finish()
+	}
 }
 
 impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    #[instrument(skip(pchannel, ppcallback))]
-    fn OnNewChannelConnection(
-        &self,
-        pchannel: windows_core::Ref<'_, IWTSVirtualChannel>,
-        data: &BSTR,
-        pbaccept: *mut BOOL,
-        ppcallback: OutRef<'_, IWTSVirtualChannelCallback>,
-    ) -> Result<()> {
-        debug!("Creating new callback for channel with name {}", &self.name);
-        let channel = match pchannel.as_ref() {
-            Some(c) => c,
-            None => return Err(Error::from(E_UNEXPECTED)),
-        };
-        let pbaccept = unsafe { &mut *pbaccept };
-        *pbaccept = BOOL::from(true);
-        debug!("Creating callback");
-        let callback: IWTSVirtualChannelCallback =
-            RdPipeChannelCallback::new(channel, &self.name)?.into();
-        trace!("Callback {:?} created", callback);
-        ppcallback.write(callback.into())?;
-        Ok(())
-    }
+	#[allow(clippy::not_unsafe_ptr_arg_deref)]
+	#[instrument(skip(pchannel, ppcallback))]
+	fn OnNewChannelConnection(
+		&self,
+		pchannel: windows_core::Ref<'_, IWTSVirtualChannel>,
+		data: &BSTR,
+		pbaccept: *mut BOOL,
+		ppcallback: OutRef<'_, IWTSVirtualChannelCallback>,
+	) -> Result<()> {
+		debug!("Creating new callback for channel with name {}", &self.name);
+		let channel = match pchannel.as_ref() {
+			Some(c) => c,
+			None => return Err(Error::from(E_UNEXPECTED)),
+		};
+		let pbaccept = unsafe { &mut *pbaccept };
+		*pbaccept = BOOL::from(true);
+		debug!("Creating callback");
+		let callback: IWTSVirtualChannelCallback =
+			RdPipeChannelCallback::new(channel, &self.name)?.into();
+		trace!("Callback {:?} created", callback);
+		ppcallback.write(callback.into())?;
+		Ok(())
+	}
 }
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 
 fn channel_write(agile: &AgileReference<IWTSVirtualChannel>, data: &[u8]) -> Result<()> {
-    let channel = agile.resolve()?;
-    unsafe { channel.Write(data, None) }
+	let channel = agile.resolve()?;
+	unsafe { channel.Write(data, None) }
 }
 
 const MSG_XON: u8 = 0x11;
@@ -193,255 +191,247 @@ const MSG_XOFF: u8 = 0x13;
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-    pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-    shutdown: CancellationToken,
+	pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
+	shutdown: CancellationToken,
 }
 
 impl RdPipeChannelCallback {
-    #[instrument]
-    pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Result<Self> {
-        let addr = format!(
-            "{}_{}_{}",
-            PIPE_NAME_PREFIX,
-            channel_name,
-            channel.as_raw() as usize
-        );
-        let channel_agile = AgileReference::new(channel)?;
-        let pipe_writer = Arc::new(Mutex::new(None));
-        let shutdown = CancellationToken::new();
-        debug!("Constructing the callback");
+	#[instrument]
+	pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Result<Self> {
+		let addr = format!("{}_{}_{}", PIPE_NAME_PREFIX, channel_name, channel.as_raw() as usize);
+		let channel_agile = AgileReference::new(channel)?;
+		let pipe_writer = Arc::new(Mutex::new(None));
+		let shutdown = CancellationToken::new();
+		debug!("Constructing the callback");
 
-        Self::process_pipe(pipe_writer.clone(), channel_agile, addr, shutdown.clone());
+		Self::process_pipe(pipe_writer.clone(), channel_agile, addr, shutdown.clone());
 
-        Ok(Self {
-            pipe_writer,
-            shutdown,
-        })
-    }
+		Ok(Self { pipe_writer, shutdown })
+	}
 
-    #[instrument]
-    pub fn process_pipe(
-        writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-        channel_agile: AgileReference<IWTSVirtualChannel>,
-        pipe_addr: String,
-        shutdown: CancellationToken,
-    ) {
-        ASYNC_RUNTIME.spawn(async move {
-            let mut first_pipe_instance = true;
-            let login_sid = match get_logon_sid() {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Can't get login sid,  {}", e);
-                    return;
-                }
-            };
-            let sddl = format!("D:(A;;GA;;;{login_sid})", login_sid = login_sid);
+	#[instrument]
+	pub fn process_pipe(
+		writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
+		channel_agile: AgileReference<IWTSVirtualChannel>,
+		pipe_addr: String,
+		shutdown: CancellationToken,
+	) {
+		ASYNC_RUNTIME.spawn(async move {
+			let mut first_pipe_instance = true;
+			let login_sid = match get_logon_sid() {
+				Ok(s) => s,
+				Err(e) => {
+					error!("Can't get login sid,  {}", e);
+					return;
+				}
+			};
+			let sddl = format!("D:(A;;GA;;;{login_sid})", login_sid = login_sid);
 
-            loop {
-                trace!(
-                    "Creating pipe server with address {}, first instance {}",
-                    pipe_addr, first_pipe_instance
-                );
-                let server = match unsafe {
-                    let mut attributes = match security_attributes_from_sddl(&sddl) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Can't create security attributes, {}", e);
-                            break;
-                        }
-                    };
-                    let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
+			loop {
+				trace!(
+					"Creating pipe server with address {}, first instance {}",
+					pipe_addr, first_pipe_instance
+				);
+				let server = match unsafe {
+					let mut attributes = match security_attributes_from_sddl(&sddl) {
+						Ok(s) => s,
+						Err(e) => {
+							error!("Can't create security attributes, {}", e);
+							break;
+						}
+					};
+					let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
 
-                    ServerOptions::new()
-                        .first_pipe_instance(first_pipe_instance)
-                        .max_instances(1)
-                        .create_with_security_attributes_raw(
-                            &pipe_addr,
-                            &raw mut attributes as *mut _,
-                        )
-                } {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Error while creating named pipe server: {}", e);
-                        tokio::select! {
-                            biased;
-                            _ = shutdown.cancelled() => {
-                                trace!("Shutdown signalled during pipe-server creation retry");
-                                break;
-                            }
-                            _ = sleep(Duration::from_millis(100)) => {}
-                        }
-                        continue;
-                    }
-                };
-                first_pipe_instance = false;
-                trace!("Initiate connection to pipe client");
-                let connect_res = tokio::select! {
-                    biased;
-                    _ = shutdown.cancelled() => {
-                        trace!("Shutdown signalled while awaiting pipe client connection");
-                        break;
-                    }
-                    res = server.connect() => res,
-                };
-                match connect_res {
-                    Ok(_) => match channel_write(&channel_agile, &[MSG_XON]) {
-                        Ok(()) => trace!("Wrote XON to channel"),
-                        Err(e) => {
-                            error!("Error writing XON to channel: {}", e);
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        error!("Error connecting to pipe client: {}", e);
-                        continue;
-                    }
-                }
-                let (mut server_reader, server_writer) = split(server);
-                {
-                    let mut writer_guard = writer.lock();
-                    *writer_guard = Some(server_writer);
-                }
-                trace!("Pipe client connected. Initiating pipe_reader loop");
-                'reader: loop {
-                    let mut buf = Vec::with_capacity(64 * 1024);
-                    let read_res = tokio::select! {
-                        biased;
-                        _ = shutdown.cancelled() => {
-                            trace!("Shutdown signalled inside reader loop");
-                            match channel_write(&channel_agile, &[MSG_XOFF]) {
-                                Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
-                                Err(e) => error!("Error writing XOFF on shutdown: {}", e),
-                            }
-                            break 'reader;
-                        }
-                        res = server_reader.read_buf(&mut buf) => res,
-                    };
-                    match read_res {
-                        Ok(0) => {
-                            info!("Received 0 bytes, pipe closed by client");
-                            match channel_write(&channel_agile, &[MSG_XOFF]) {
-                                Ok(()) => trace!("Wrote XOFF to channel"),
-                                Err(e) => error!("Error writing XOFF to channel: {}", e),
-                            }
-                            break 'reader;
-                        }
-                        Ok(n) => {
-                            trace!("read {} bytes", n);
-                            match channel_write(&channel_agile, &buf) {
-                                Ok(()) => trace!("Wrote {} bytes to channel", n),
-                                Err(e) => {
-                                    error!("Error during write to channel: {}", e);
-                                    break 'reader;
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == WouldBlock => {
-                            warn!("Reading pipe would block: {}", e);
-                            continue;
-                        }
-                        Err(e) => {
-                            error!("Error reading from pipe client: {}", e);
-                            match channel_write(&channel_agile, &[MSG_XOFF]) {
-                                Ok(()) => trace!("Wrote XOFF to channel"),
-                                Err(e) => error!("Error writing XOFF to channel: {}", e),
-                            }
-                            break 'reader;
-                        }
-                    }
-                }
-                trace!("End of pipe_reader loop, releasing writer");
-                {
-                    let mut writer_guard = writer.lock();
-                    *writer_guard = None;
-                }
-                trace!("Writer released");
-            }
-        });
-    }
+					ServerOptions::new()
+						.first_pipe_instance(first_pipe_instance)
+						.max_instances(1)
+						.create_with_security_attributes_raw(
+							&pipe_addr,
+							&raw mut attributes as *mut _,
+						)
+				} {
+					Ok(s) => s,
+					Err(e) => {
+						error!("Error while creating named pipe server: {}", e);
+						tokio::select! {
+							biased;
+							_ = shutdown.cancelled() => {
+								trace!("Shutdown signalled during pipe-server creation retry");
+								break;
+							}
+							_ = sleep(Duration::from_millis(100)) => {}
+						}
+						continue;
+					}
+				};
+				first_pipe_instance = false;
+				trace!("Initiate connection to pipe client");
+				let connect_res = tokio::select! {
+					biased;
+					_ = shutdown.cancelled() => {
+						trace!("Shutdown signalled while awaiting pipe client connection");
+						break;
+					}
+					res = server.connect() => res,
+				};
+				match connect_res {
+					Ok(_) => match channel_write(&channel_agile, &[MSG_XON]) {
+						Ok(()) => trace!("Wrote XON to channel"),
+						Err(e) => {
+							error!("Error writing XON to channel: {}", e);
+							break;
+						}
+					},
+					Err(e) => {
+						error!("Error connecting to pipe client: {}", e);
+						continue;
+					}
+				}
+				let (mut server_reader, server_writer) = split(server);
+				{
+					let mut writer_guard = writer.lock();
+					*writer_guard = Some(server_writer);
+				}
+				trace!("Pipe client connected. Initiating pipe_reader loop");
+				'reader: loop {
+					let mut buf = Vec::with_capacity(64 * 1024);
+					let read_res = tokio::select! {
+						biased;
+						_ = shutdown.cancelled() => {
+							trace!("Shutdown signalled inside reader loop");
+							match channel_write(&channel_agile, &[MSG_XOFF]) {
+								Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
+								Err(e) => error!("Error writing XOFF on shutdown: {}", e),
+							}
+							break 'reader;
+						}
+						res = server_reader.read_buf(&mut buf) => res,
+					};
+					match read_res {
+						Ok(0) => {
+							info!("Received 0 bytes, pipe closed by client");
+							match channel_write(&channel_agile, &[MSG_XOFF]) {
+								Ok(()) => trace!("Wrote XOFF to channel"),
+								Err(e) => error!("Error writing XOFF to channel: {}", e),
+							}
+							break 'reader;
+						}
+						Ok(n) => {
+							trace!("read {} bytes", n);
+							match channel_write(&channel_agile, &buf) {
+								Ok(()) => trace!("Wrote {} bytes to channel", n),
+								Err(e) => {
+									error!("Error during write to channel: {}", e);
+									break 'reader;
+								}
+							}
+						}
+						Err(e) if e.kind() == WouldBlock => {
+							warn!("Reading pipe would block: {}", e);
+							continue;
+						}
+						Err(e) => {
+							error!("Error reading from pipe client: {}", e);
+							match channel_write(&channel_agile, &[MSG_XOFF]) {
+								Ok(()) => trace!("Wrote XOFF to channel"),
+								Err(e) => error!("Error writing XOFF to channel: {}", e),
+							}
+							break 'reader;
+						}
+					}
+				}
+				trace!("End of pipe_reader loop, releasing writer");
+				{
+					let mut writer_guard = writer.lock();
+					*writer_guard = None;
+				}
+				trace!("Writer released");
+			}
+		});
+	}
 }
 
 impl fmt::Debug for RdPipeChannelCallback_Impl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RdPipeChannelCallback_Impl")
-            .field("pipe_writer", &self.pipe_writer)
-            .field("shutdown_cancelled", &self.shutdown.is_cancelled())
-            .finish()
-    }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.debug_struct("RdPipeChannelCallback_Impl")
+			.field("pipe_writer", &self.pipe_writer)
+			.field("shutdown_cancelled", &self.shutdown.is_cancelled())
+			.finish()
+	}
 }
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    #[instrument]
-    fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
-        debug!("Data received, buffer has size {}", cbsize);
-        let mut writer_lock = self.pipe_writer.lock();
-        writer_lock.as_mut().map_or_else(
-            || {
-                debug!("Data received without an open named pipe");
-                Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
-            },
-            |writer| {
-                let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-                trace!("Writing received data to pipe: {:?}", slice);
-                if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
-                    error!("Error writing received data to pipe: {}", e);
-                    return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
-                }
-                trace!("Received data written to pipe");
-                Ok(())
-            },
-        )
-    }
+	#[allow(clippy::not_unsafe_ptr_arg_deref)]
+	#[instrument]
+	fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
+		debug!("Data received, buffer has size {}", cbsize);
+		let mut writer_lock = self.pipe_writer.lock();
+		writer_lock.as_mut().map_or_else(
+			|| {
+				debug!("Data received without an open named pipe");
+				Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
+			},
+			|writer| {
+				let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
+				trace!("Writing received data to pipe: {:?}", slice);
+				if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
+					error!("Error writing received data to pipe: {}", e);
+					return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+				}
+				trace!("Received data written to pipe");
+				Ok(())
+			},
+		)
+	}
 
-    #[instrument]
-    fn OnClose(&self) -> Result<()> {
-        self.shutdown.cancel();
-        let mut writer_guard = self.pipe_writer.lock();
-        if let Some(ref mut writer) = *writer_guard {
-            ASYNC_RUNTIME.block_on(writer.shutdown())?;
-            *writer_guard = None;
-        }
-        Ok(())
-    }
+	#[instrument]
+	fn OnClose(&self) -> Result<()> {
+		self.shutdown.cancel();
+		let mut writer_guard = self.pipe_writer.lock();
+		if let Some(ref mut writer) = *writer_guard {
+			ASYNC_RUNTIME.block_on(writer.shutdown())?;
+			*writer_guard = None;
+		}
+		Ok(())
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn test_pipe_name_prefix() {
-        // Verify the pipe name prefix format is correct
-        assert!(PIPE_NAME_PREFIX.starts_with(r"\\.\pipe\"));
-        assert!(PIPE_NAME_PREFIX.contains("RDPipe"));
-    }
+	#[test]
+	fn test_pipe_name_prefix() {
+		// Verify the pipe name prefix format is correct
+		assert!(PIPE_NAME_PREFIX.starts_with(r"\\.\pipe\"));
+		assert!(PIPE_NAME_PREFIX.contains("RDPipe"));
+	}
 
-    #[test]
-    fn test_reg_path_format() {
-        // Verify registry path format
-        assert!(REG_PATH.contains("Software\\Classes\\CLSID"));
-        assert!(REG_PATH.contains(&format!("{:?}", crate::registry::CLSID_RD_PIPE_PLUGIN)));
-    }
+	#[test]
+	fn test_reg_path_format() {
+		// Verify registry path format
+		assert!(REG_PATH.contains("Software\\Classes\\CLSID"));
+		assert!(REG_PATH.contains(&format!("{:?}", crate::registry::CLSID_RD_PIPE_PLUGIN)));
+	}
 
-    #[test]
-    fn test_pipe_name_generation() {
-        // Test pipe name generation logic
-        let channel_name = "testchannel";
-        let channel_addr = 12345_usize;
-        let addr = format!("{}_{}_{}", PIPE_NAME_PREFIX, channel_name, channel_addr);
+	#[test]
+	fn test_pipe_name_generation() {
+		// Test pipe name generation logic
+		let channel_name = "testchannel";
+		let channel_addr = 12345_usize;
+		let addr = format!("{}_{}_{}", PIPE_NAME_PREFIX, channel_name, channel_addr);
 
-        assert!(addr.starts_with(PIPE_NAME_PREFIX));
-        assert!(addr.contains(channel_name));
-        assert!(addr.contains(&channel_addr.to_string()));
-    }
+		assert!(addr.starts_with(PIPE_NAME_PREFIX));
+		assert!(addr.contains(channel_name));
+		assert!(addr.contains(&channel_addr.to_string()));
+	}
 
-    #[test]
-    fn test_listener_callback_new() {
-        // Test listener callback construction
-        let name = String::from("test_channel");
-        let callback = RdPipeListenerCallback::new(name.clone());
+	#[test]
+	fn test_listener_callback_new() {
+		// Test listener callback construction
+		let name = String::from("test_channel");
+		let callback = RdPipeListenerCallback::new(name.clone());
 
-        // Verify the name is stored
-        assert_eq!(callback.name, name);
-    }
+		// Verify the name is stored
+		assert_eq!(callback.name, name);
+	}
 }

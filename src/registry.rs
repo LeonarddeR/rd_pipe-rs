@@ -26,211 +26,157 @@ pub const TS_ADD_IN_RD_PIPE_FOLDER_NAME: &str = RD_PIPE_PLUGIN_NAME;
 const TS_ADD_IN_NAME_VALUE_NAME: &str = "Name";
 const TS_ADD_IN_VIEW_ENABLED_VALUE_NAME: &str = "View Enabled";
 const CTX_MODULES_FOLDER: &str =
-    r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
+	r"SOFTWARE\Citrix\ICA Client\Engine\Configuration\Advanced\Modules";
 const CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME: &str = "DvcPlugins";
 
 #[instrument]
 pub fn inproc_server_add_to_registry(
-    parent_key: &Key,
-    clsid_key: &str,
-    dll_path: &str,
-    channel_names: &[&str],
+	parent_key: &Key,
+	clsid_key: &str,
+	dll_path: &str,
+	channel_names: &[&str],
 ) -> windows_core::Result<()> {
-    debug!("inproc_server_add_to_registry called");
-    trace!("Creating transaction");
-    let t = Transaction::new()?;
-    let key_path = format!(r"{}\{{{:?}}}", clsid_key, CLSID_RD_PIPE_PLUGIN);
-    trace!("Creating {}", &key_path);
-    let key = parent_key
-        .options()
-        .write()
-        .create()
-        .transaction(&t)
-        .open(&key_path)?;
-    trace!("Setting default value");
-    key.set_string("", RD_PIPE_PLUGIN_NAME)?;
-    trace!("Setting {}", COM_CLS_CHANNEL_NAMES_VALUE_NAME);
-    key.set_multi_string(COM_CLS_CHANNEL_NAMES_VALUE_NAME, channel_names)?;
-    trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
-    let key = key
-        .options()
-        .write()
-        .create()
-        .transaction(&t)
-        .open(COM_IMPROC_SERVER_FOLDER_NAME)?;
-    trace!("Setting default value");
-    key.set_string("", dll_path)?;
-    trace!("Setting threading model value");
-    key.set_string("ThreadingModel", "Free")?;
-    trace!("Committing transaction");
-    t.commit()
+	debug!("inproc_server_add_to_registry called");
+	trace!("Creating transaction");
+	let t = Transaction::new()?;
+	let key_path = format!(r"{}\{{{:?}}}", clsid_key, CLSID_RD_PIPE_PLUGIN);
+	trace!("Creating {}", &key_path);
+	let key = parent_key.options().write().create().transaction(&t).open(&key_path)?;
+	trace!("Setting default value");
+	key.set_string("", RD_PIPE_PLUGIN_NAME)?;
+	trace!("Setting {}", COM_CLS_CHANNEL_NAMES_VALUE_NAME);
+	key.set_multi_string(COM_CLS_CHANNEL_NAMES_VALUE_NAME, channel_names)?;
+	trace!("Creating {}\\{}", &key_path, &COM_IMPROC_SERVER_FOLDER_NAME);
+	let key = key.options().write().create().transaction(&t).open(COM_IMPROC_SERVER_FOLDER_NAME)?;
+	trace!("Setting default value");
+	key.set_string("", dll_path)?;
+	trace!("Setting threading model value");
+	key.set_string("ThreadingModel", "Free")?;
+	trace!("Committing transaction");
+	t.commit()
 }
 
 #[instrument]
 pub fn delete_from_registry(
-    parent_key: &Key,
-    reg_path: &str,
-    sub_key: &str,
+	parent_key: &Key,
+	reg_path: &str,
+	sub_key: &str,
 ) -> windows_core::Result<()> {
-    debug!("delete_from_registry called");
-    trace!("Opening {}", &reg_path);
-    let key = parent_key.options().read().write().open(reg_path)?;
-    trace!("Deleting {}\\{}", &reg_path, &sub_key);
-    key.remove_tree(sub_key)
+	debug!("delete_from_registry called");
+	trace!("Opening {}", &reg_path);
+	let key = parent_key.options().read().write().open(reg_path)?;
+	trace!("Deleting {}\\{}", &reg_path, &sub_key);
+	key.remove_tree(sub_key)
 }
 
 #[instrument]
 pub fn msts_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
-    debug!("msts_add_to_registry");
-    trace!("Creating transaction");
-    let t = Transaction::new()?;
-    let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
-    trace!("Creating {}", &key_path);
-    let key = parent_key
-        .options()
-        .write()
-        .create()
-        .transaction(&t)
-        .open(&key_path)?;
-    trace!("Setting value {}", TS_ADD_IN_NAME_VALUE_NAME);
-    key.set_string(
-        TS_ADD_IN_NAME_VALUE_NAME,
-        format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
-    )?;
-    trace!("Setting value {}", TS_ADD_IN_VIEW_ENABLED_VALUE_NAME);
-    key.set_u32(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, 1)?;
-    trace!("Committing transaction");
-    t.commit()
+	debug!("msts_add_to_registry");
+	trace!("Creating transaction");
+	let t = Transaction::new()?;
+	let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
+	trace!("Creating {}", &key_path);
+	let key = parent_key.options().write().create().transaction(&t).open(&key_path)?;
+	trace!("Setting value {}", TS_ADD_IN_NAME_VALUE_NAME);
+	key.set_string(TS_ADD_IN_NAME_VALUE_NAME, format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
+	trace!("Setting value {}", TS_ADD_IN_VIEW_ENABLED_VALUE_NAME);
+	key.set_u32(TS_ADD_IN_VIEW_ENABLED_VALUE_NAME, 1)?;
+	trace!("Committing transaction");
+	t.commit()
 }
 
 #[instrument]
 pub fn ctx_add_to_registry(parent_key: &Key) -> windows_core::Result<()> {
-    debug!("ctx_add_to_registry called");
-    trace!("Creating transaction");
-    let t = Transaction::new()?;
-    trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = parent_key
-        .options()
-        .read()
-        .transaction(&t)
-        .open(CTX_MODULES_FOLDER)?;
-    let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
-    trace!("Creating {}", &key_name);
-    let key = modules_key
-        .options()
-        .read()
-        .write()
-        .create()
-        .transaction(&t)
-        .open(key_name)?;
-    trace!("Setting value DvcNames");
-    key.set_string("DvcNames", RD_PIPE_PLUGIN_NAME)?;
-    trace!("Setting value PluginClassId");
-    key.set_string("PluginClassId", format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
-    trace!("Opening DVCAdapter key");
-    let key = modules_key
-        .options()
-        .read()
-        .write()
-        .transaction(&t)
-        .open("DVCAdapter")?;
-    let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
-    trace!("Current plugins under DVC adapter: {}", &plugins);
-    let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
-    if !plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
-        debug!("Adding {} to {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
-        plugins_list.push(RD_PIPE_PLUGIN_NAME);
-        trace!(
-            "Setting value {}",
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME
-        );
-        key.set_string(
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME,
-            plugins_list.join(","),
-        )?;
-    }
-    trace!("Committing transaction");
-    t.commit()
+	debug!("ctx_add_to_registry called");
+	trace!("Creating transaction");
+	let t = Transaction::new()?;
+	trace!("Opening {}", CTX_MODULES_FOLDER);
+	let modules_key = parent_key.options().read().transaction(&t).open(CTX_MODULES_FOLDER)?;
+	let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+	trace!("Creating {}", &key_name);
+	let key = modules_key.options().read().write().create().transaction(&t).open(key_name)?;
+	trace!("Setting value DvcNames");
+	key.set_string("DvcNames", RD_PIPE_PLUGIN_NAME)?;
+	trace!("Setting value PluginClassId");
+	key.set_string("PluginClassId", format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN))?;
+	trace!("Opening DVCAdapter key");
+	let key = modules_key.options().read().write().transaction(&t).open("DVCAdapter")?;
+	let plugins: String = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
+	trace!("Current plugins under DVC adapter: {}", &plugins);
+	let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
+	if !plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
+		debug!("Adding {} to {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
+		plugins_list.push(RD_PIPE_PLUGIN_NAME);
+		trace!("Setting value {}", CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME);
+		key.set_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME, plugins_list.join(","))?;
+	}
+	trace!("Committing transaction");
+	t.commit()
 }
 
 #[instrument]
 pub fn ctx_delete_from_registry(parent_key: &Key) -> windows_core::Result<()> {
-    debug!("ctx_delete_from_registry called");
-    trace!("Creating transaction");
-    let t = Transaction::new()?;
-    trace!("Opening {}", CTX_MODULES_FOLDER);
-    let modules_key = parent_key
-        .options()
-        .read()
-        .write()
-        .transaction(&t)
-        .open(CTX_MODULES_FOLDER)?;
-    trace!("Opening DVCAdapter key");
-    let key = modules_key
-        .options()
-        .read()
-        .write()
-        .transaction(&t)
-        .open("DVCAdapter")?;
-    let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
-    trace!("Current plugins under DVC adapter: {}", &plugins);
-    let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
-    if plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
-        debug!("removing {} from {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
-        plugins_list.retain(|s| s != &RD_PIPE_PLUGIN_NAME);
-        trace!(
-            "Setting value {}",
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME
-        );
-        key.set_string(
-            CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME,
-            plugins_list.join(","),
-        )?;
-    }
-    let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
-    trace!("Deleting {}", &key_name);
-    modules_key.remove_tree(key_name)?;
-    trace!("Committing transaction");
-    t.commit()
+	debug!("ctx_delete_from_registry called");
+	trace!("Creating transaction");
+	let t = Transaction::new()?;
+	trace!("Opening {}", CTX_MODULES_FOLDER);
+	let modules_key =
+		parent_key.options().read().write().transaction(&t).open(CTX_MODULES_FOLDER)?;
+	trace!("Opening DVCAdapter key");
+	let key = modules_key.options().read().write().transaction(&t).open("DVCAdapter")?;
+	let plugins = key.get_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME)?;
+	trace!("Current plugins under DVC adapter: {}", &plugins);
+	let mut plugins_list = plugins.split(',').collect::<Vec<&str>>();
+	if plugins_list.contains(&RD_PIPE_PLUGIN_NAME) {
+		debug!("removing {} from {:?}", &RD_PIPE_PLUGIN_NAME, &plugins_list);
+		plugins_list.retain(|s| s != &RD_PIPE_PLUGIN_NAME);
+		trace!("Setting value {}", CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME);
+		key.set_string(CTX_MODULE_DVC_ADAPTER_PLUGINS_VALUE_NAME, plugins_list.join(","))?;
+	}
+	let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+	trace!("Deleting {}", &key_name);
+	modules_key.remove_tree(key_name)?;
+	trace!("Committing transaction");
+	t.commit()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn test_clsid_is_valid() {
-        assert_ne!(CLSID_RD_PIPE_PLUGIN, GUID::zeroed());
-    }
+	#[test]
+	fn test_clsid_is_valid() {
+		assert_ne!(CLSID_RD_PIPE_PLUGIN, GUID::zeroed());
+	}
 
-    #[test]
-    fn test_plugin_name_consistency() {
-        // Verify that the constant used in folder names matches the plugin name
-        assert_eq!(TS_ADD_IN_RD_PIPE_FOLDER_NAME, RD_PIPE_PLUGIN_NAME);
-    }
+	#[test]
+	fn test_plugin_name_consistency() {
+		// Verify that the constant used in folder names matches the plugin name
+		assert_eq!(TS_ADD_IN_RD_PIPE_FOLDER_NAME, RD_PIPE_PLUGIN_NAME);
+	}
 
-    #[test]
-    fn test_key_path_format() {
-        // Test the key path format generation
-        let key_path = format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN);
-        assert!(key_path.contains(COM_CLS_FOLDER));
-        assert!(key_path.contains(&format!("{:?}", CLSID_RD_PIPE_PLUGIN)));
-    }
+	#[test]
+	fn test_key_path_format() {
+		// Test the key path format generation
+		let key_path = format!(r"{}\{{{:?}}}", COM_CLS_FOLDER, CLSID_RD_PIPE_PLUGIN);
+		assert!(key_path.contains(COM_CLS_FOLDER));
+		assert!(key_path.contains(&format!("{:?}", CLSID_RD_PIPE_PLUGIN)));
+	}
 
-    #[test]
-    fn test_ts_add_in_path_format() {
-        // Test Terminal Services add-in path format
-        let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
-        assert!(key_path.contains("Terminal Server Client"));
-        assert!(key_path.contains("AddIns"));
-        assert!(key_path.ends_with(RD_PIPE_PLUGIN_NAME));
-    }
+	#[test]
+	fn test_ts_add_in_path_format() {
+		// Test Terminal Services add-in path format
+		let key_path = format!(r"{}\{}", TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME);
+		assert!(key_path.contains("Terminal Server Client"));
+		assert!(key_path.contains("AddIns"));
+		assert!(key_path.ends_with(RD_PIPE_PLUGIN_NAME));
+	}
 
-    #[test]
-    fn test_citrix_key_name_format() {
-        // Test Citrix plugin key name format
-        let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
-        assert!(key_name.starts_with("DVCPlugin_"));
-        assert!(key_name.ends_with(RD_PIPE_PLUGIN_NAME));
-    }
+	#[test]
+	fn test_citrix_key_name_format() {
+		// Test Citrix plugin key name format
+		let key_name = format!("DVCPlugin_{}", RD_PIPE_PLUGIN_NAME);
+		assert!(key_name.starts_with("DVCPlugin_"));
+		assert!(key_name.ends_with(RD_PIPE_PLUGIN_NAME));
+	}
 }

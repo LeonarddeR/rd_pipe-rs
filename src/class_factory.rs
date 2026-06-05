@@ -15,14 +15,14 @@
 use core::{ffi::c_void, fmt, mem::transmute, ptr::null_mut};
 use tracing::{debug, instrument, trace};
 use windows::{
-    Win32::{
-        Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE},
-        System::{
-            Com::{IClassFactory, IClassFactory_Impl},
-            RemoteDesktop::IWTSPlugin,
-        },
-    },
-    core::{Error, GUID, IUnknown, Interface as _, Result, implement},
+	Win32::{
+		Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+		System::{
+			Com::{IClassFactory, IClassFactory_Impl},
+			RemoteDesktop::IWTSPlugin,
+		},
+	},
+	core::{Error, GUID, IUnknown, Interface as _, Result, implement},
 };
 use windows_core::BOOL;
 
@@ -33,110 +33,110 @@ use crate::rd_pipe_plugin::RdPipePlugin;
 pub struct ClassFactory;
 
 impl fmt::Debug for ClassFactory_Impl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ClassFactory_Impl").finish()
-    }
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.debug_struct("ClassFactory_Impl").finish()
+	}
 }
 
 impl IClassFactory_Impl for ClassFactory_Impl {
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    #[instrument(skip(outer))]
-    fn CreateInstance(
-        &self,
-        outer: windows_core::Ref<'_, IUnknown>,
-        iid: *const GUID,
-        object: *mut *mut c_void,
-    ) -> Result<()> {
-        let riid = unsafe { *iid };
-        let robject = unsafe { &mut *object };
-        *robject = null_mut();
-        trace!("Object with type {:?} requested", riid);
-        if outer.is_some() {
-            return Err(Error::from(CLASS_E_NOAGGREGATION));
-        }
-        debug!("Creating plugin instance");
-        match riid {
-            IUnknown::IID => {
-                trace!("Requested IUnknown");
-                let plugin: IUnknown = RdPipePlugin::new().into();
-                *robject = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
-            }
-            IWTSPlugin::IID => {
-                trace!("Requested IWTSPlugin");
-                let plugin: IWTSPlugin = RdPipePlugin::new().into();
-                *robject = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
-            }
-            _ => return Err(Error::from(E_NOINTERFACE)),
-        }
-        Ok(())
-    }
+	#[allow(clippy::not_unsafe_ptr_arg_deref)]
+	#[instrument(skip(outer))]
+	fn CreateInstance(
+		&self,
+		outer: windows_core::Ref<'_, IUnknown>,
+		iid: *const GUID,
+		object: *mut *mut c_void,
+	) -> Result<()> {
+		let riid = unsafe { *iid };
+		let robject = unsafe { &mut *object };
+		*robject = null_mut();
+		trace!("Object with type {:?} requested", riid);
+		if outer.is_some() {
+			return Err(Error::from(CLASS_E_NOAGGREGATION));
+		}
+		debug!("Creating plugin instance");
+		match riid {
+			IUnknown::IID => {
+				trace!("Requested IUnknown");
+				let plugin: IUnknown = RdPipePlugin::new().into();
+				*robject = unsafe { transmute::<IUnknown, *mut c_void>(plugin) };
+			}
+			IWTSPlugin::IID => {
+				trace!("Requested IWTSPlugin");
+				let plugin: IWTSPlugin = RdPipePlugin::new().into();
+				*robject = unsafe { transmute::<IWTSPlugin, *mut c_void>(plugin) };
+			}
+			_ => return Err(Error::from(E_NOINTERFACE)),
+		}
+		Ok(())
+	}
 
-    fn LockServer(&self, _lock: BOOL) -> Result<()> {
-        Ok(())
-    }
+	fn LockServer(&self, _lock: BOOL) -> Result<()> {
+		Ok(())
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn test_class_factory_construction() {
-        // Test that ClassFactory can be constructed
-        let factory = ClassFactory;
-        // Verify size is zero (empty struct)
-        assert_eq!(std::mem::size_of_val(&factory), 0);
-    }
+	#[test]
+	fn test_class_factory_construction() {
+		// Test that ClassFactory can be constructed
+		let factory = ClassFactory;
+		// Verify size is zero (empty struct)
+		assert_eq!(std::mem::size_of_val(&factory), 0);
+	}
 
-    #[test]
-    fn test_class_factory_into_iclassfactory() {
-        // Test conversion to IClassFactory interface
-        let factory = ClassFactory;
-        let _interface: IClassFactory = factory.into();
-        // If we get here without panicking, the conversion succeeded
-    }
+	#[test]
+	fn test_class_factory_into_iclassfactory() {
+		// Test conversion to IClassFactory interface
+		let factory = ClassFactory;
+		let _interface: IClassFactory = factory.into();
+		// If we get here without panicking, the conversion succeeded
+	}
 
-    #[test]
-    fn test_lock_server_always_succeeds() {
-        // LockServer should always return Ok
-        let factory = ClassFactory;
-        let factory_impl = factory.into_outer();
+	#[test]
+	fn test_lock_server_always_succeeds() {
+		// LockServer should always return Ok
+		let factory = ClassFactory;
+		let factory_impl = factory.into_outer();
 
-        // Test both lock and unlock
-        assert!(factory_impl.LockServer(true.into()).is_ok());
-        assert!(factory_impl.LockServer(false.into()).is_ok());
-    }
+		// Test both lock and unlock
+		assert!(factory_impl.LockServer(true.into()).is_ok());
+		assert!(factory_impl.LockServer(false.into()).is_ok());
+	}
 
-    #[test]
-    fn test_supported_interface_iids() {
-        // Verify that we handle the expected interface IIDs
-        // IUnknown::IID and IWTSPlugin::IID should be supported
+	#[test]
+	fn test_supported_interface_iids() {
+		// Verify that we handle the expected interface IIDs
+		// IUnknown::IID and IWTSPlugin::IID should be supported
 
-        // These are the GUIDs we expect to handle
-        let iunknown_iid = IUnknown::IID;
-        let iwtsplugin_iid = IWTSPlugin::IID;
+		// These are the GUIDs we expect to handle
+		let iunknown_iid = IUnknown::IID;
+		let iwtsplugin_iid = IWTSPlugin::IID;
 
-        // Verify they are different
-        assert_ne!(iunknown_iid, iwtsplugin_iid);
+		// Verify they are different
+		assert_ne!(iunknown_iid, iwtsplugin_iid);
 
-        // Verify they are not null GUIDs
-        assert_ne!(iunknown_iid, GUID::zeroed());
-        assert_ne!(iwtsplugin_iid, GUID::zeroed());
-    }
+		// Verify they are not null GUIDs
+		assert_ne!(iunknown_iid, GUID::zeroed());
+		assert_ne!(iwtsplugin_iid, GUID::zeroed());
+	}
 
-    #[test]
-    fn test_class_factory_debug_impl() {
-        // Test that Debug is properly implemented
-        let factory = ClassFactory;
-        let debug_str = format!("{:?}", factory);
-        assert!(debug_str.contains("ClassFactory"));
-    }
+	#[test]
+	fn test_class_factory_debug_impl() {
+		// Test that Debug is properly implemented
+		let factory = ClassFactory;
+		let debug_str = format!("{:?}", factory);
+		assert!(debug_str.contains("ClassFactory"));
+	}
 
-    #[test]
-    fn test_class_factory_impl_debug() {
-        // Test that ClassFactory_Impl Debug is properly implemented
-        let factory_impl = ClassFactory.into_outer();
-        let debug_str = format!("{:?}", factory_impl);
-        assert!(debug_str.contains("ClassFactory_Impl"));
-    }
+	#[test]
+	fn test_class_factory_impl_debug() {
+		// Test that ClassFactory_Impl Debug is properly implemented
+		let factory_impl = ClassFactory.into_outer();
+		let debug_str = format!("{:?}", factory_impl);
+		assert!(debug_str.contains("ClassFactory_Impl"));
+	}
 }

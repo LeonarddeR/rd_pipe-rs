@@ -21,98 +21,98 @@ use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
 use core::{ffi::c_void, str::FromStr};
 use rd_pipe_plugin::REG_PATH;
 use registry::{
-    COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
-    inproc_server_add_to_registry, msts_add_to_registry,
+	COM_CLS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME, TS_ADD_INS_FOLDER, delete_from_registry,
+	inproc_server_add_to_registry, msts_add_to_registry,
 };
 #[cfg(target_arch = "x86")]
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
 use std::{
-    panic,
-    sync::{
-        LazyLock,
-        atomic::{AtomicIsize, Ordering},
-    },
+	panic,
+	sync::{
+		LazyLock,
+		atomic::{AtomicIsize, Ordering},
+	},
 };
 use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
-    Win32::{
-        Foundation::{
-            CLASS_E_CLASSNOTAVAILABLE, E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE,
-            S_OK,
-        },
-        System::{
-            Com::IClassFactory,
-            LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW},
-            SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
-        },
-    },
-    core::{GUID, HRESULT, Interface, PCWSTR},
+	Win32::{
+		Foundation::{
+			CLASS_E_CLASSNOTAVAILABLE, E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE,
+			S_OK,
+		},
+		System::{
+			Com::IClassFactory,
+			LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW},
+			SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
+		},
+	},
+	core::{GUID, HRESULT, Interface, PCWSTR},
 };
 use windows_core::BOOL;
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    trace!("Constructing runtime");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create Tokio runtime")
+	trace!("Constructing runtime");
+	tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.expect("Failed to create Tokio runtime")
 });
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
 fn get_log_level_from_registry(parent_key: &windows_registry::Key) -> windows_core::Result<u32> {
-    let sub_key = parent_key.open(REG_PATH)?;
-    sub_key.get_u32(REG_VALUE_LOG_LEVEL)
+	let sub_key = parent_key.open(REG_PATH)?;
+	sub_key.get_u32(REG_VALUE_LOG_LEVEL)
 }
 
 static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
-    match reason {
-        DLL_PROCESS_ATTACH => {
-            INSTANCE.store(hinst.0 as _, Ordering::Release);
-            // Set up logging
-            let file_appender =
-                tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
-            let log_level = tracing::Level::from_str(
-                &(match get_log_level_from_registry(CURRENT_USER) {
-                    Ok(l @ 1..=5) => l,
-                    _ => get_log_level_from_registry(LOCAL_MACHINE).unwrap_or_default(),
-                }
-                .to_string()),
-            )
-            .unwrap_or(tracing::Level::WARN);
-            tracing_subscriber::fmt()
-                .compact()
-                .with_writer(file_appender)
-                .with_ansi(false)
-                .with_max_level(log_level)
-                .init();
-            panic::set_hook(Box::new(|info| {
-                error!("{:?}", info);
-            }));
-            trace!(
-                "DllMain: DLL_PROCESS_ATTACH, arch {}, logging at level {}",
-                std::env::consts::ARCH,
-                log_level
-            );
-            match unsafe { DisableThreadLibraryCalls(hinst) } {
-                Ok(_) => trace!("Disabled thread library calls"),
-                Err(e) => {
-                    error!("Failed to disable thread library calls: {:?}", e);
-                    return false.into();
-                }
-            };
-        }
-        DLL_PROCESS_DETACH => {
-            debug!("DllMain: DLL_PROCESS_DETACH");
-        }
-        _ => {}
-    }
-    true.into()
+	match reason {
+		DLL_PROCESS_ATTACH => {
+			INSTANCE.store(hinst.0 as _, Ordering::Release);
+			// Set up logging
+			let file_appender =
+				tracing_appender::rolling::never(std::env::temp_dir(), "RdPipe.log");
+			let log_level = tracing::Level::from_str(
+				&(match get_log_level_from_registry(CURRENT_USER) {
+					Ok(l @ 1..=5) => l,
+					_ => get_log_level_from_registry(LOCAL_MACHINE).unwrap_or_default(),
+				}
+				.to_string()),
+			)
+			.unwrap_or(tracing::Level::WARN);
+			tracing_subscriber::fmt()
+				.compact()
+				.with_writer(file_appender)
+				.with_ansi(false)
+				.with_max_level(log_level)
+				.init();
+			panic::set_hook(Box::new(|info| {
+				error!("{:?}", info);
+			}));
+			trace!(
+				"DllMain: DLL_PROCESS_ATTACH, arch {}, logging at level {}",
+				std::env::consts::ARCH,
+				log_level
+			);
+			match unsafe { DisableThreadLibraryCalls(hinst) } {
+				Ok(_) => trace!("Disabled thread library calls"),
+				Err(e) => {
+					error!("Failed to disable thread library calls: {:?}", e);
+					return false.into();
+				}
+			};
+		}
+		DLL_PROCESS_DETACH => {
+			debug!("DllMain: DLL_PROCESS_DETACH");
+		}
+		_ => {}
+	}
+	true.into()
 }
 
 /// # Safety
@@ -120,32 +120,32 @@ pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_vo
 #[unsafe(no_mangle)]
 #[instrument(skip_all)]
 pub unsafe extern "system" fn DllGetClassObject(
-    rclsid: *const GUID,
-    riid: *const GUID,
-    ppv: *mut *mut c_void,
+	rclsid: *const GUID,
+	riid: *const GUID,
+	ppv: *mut *mut c_void,
 ) -> HRESULT {
-    debug!("DllGetClassObject called");
-    if !ppv.is_null() {
-        unsafe { *ppv = core::ptr::null_mut() };
-    }
-    if rclsid.is_null() || riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    let clsid = unsafe { *rclsid };
-    let iid = unsafe { *riid };
-    if clsid != CLSID_RD_PIPE_PLUGIN {
-        error!("DllGetClassObject called for unknown class: {:?}", clsid);
-        return CLASS_E_CLASSNOTAVAILABLE;
-    }
-    if iid != IClassFactory::IID {
-        error!("DllGetClassObject called for unknown interface: {:?}", iid);
-        return E_UNEXPECTED;
-    }
-    trace!("Constructing class factory");
-    let factory: IClassFactory = ClassFactory.into();
-    trace!("Setting result pointer to class factory");
-    unsafe { *ppv = factory.into_raw() };
-    S_OK
+	debug!("DllGetClassObject called");
+	if !ppv.is_null() {
+		unsafe { *ppv = core::ptr::null_mut() };
+	}
+	if rclsid.is_null() || riid.is_null() || ppv.is_null() {
+		return E_POINTER;
+	}
+	let clsid = unsafe { *rclsid };
+	let iid = unsafe { *riid };
+	if clsid != CLSID_RD_PIPE_PLUGIN {
+		error!("DllGetClassObject called for unknown class: {:?}", clsid);
+		return CLASS_E_CLASSNOTAVAILABLE;
+	}
+	if iid != IClassFactory::IID {
+		error!("DllGetClassObject called for unknown interface: {:?}", iid);
+		return E_UNEXPECTED;
+	}
+	trace!("Constructing class factory");
+	let factory: IClassFactory = ClassFactory.into();
+	trace!("Setting result pointer to class factory");
+	unsafe { *ppv = factory.into_raw() };
+	S_OK
 }
 
 const CMD_COM_SERVER: char = 'c'; // Registers/unregisters the COM server
@@ -156,187 +156,163 @@ const CMD_LOCAL_MACHINE: char = 'm'; // If omitted, registers to HKEY_CURRENT_US
 #[unsafe(no_mangle)]
 #[instrument]
 pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
-    let install = install.as_bool();
-    debug!("DllInstall called");
-    if cmd_line.is_null() {
-        error!("No command line provided");
-        return ERROR_INVALID_PARAMETER.into();
-    }
-    let arguments: String = match unsafe { cmd_line.to_string() } {
-        Ok(s) => {
-            trace!("Command line has: {}", &s);
-            s
-        }
-        Err(e) => {
-            error!("Couldn't convert arguments from PCWSTR: {}", e);
-            return ERROR_INVALID_PARAMETER.into();
-        }
-    };
-    if arguments.is_empty() {
-        error!("No arguments provided");
-        return ERROR_INVALID_PARAMETER.into();
-    }
-    let arguments: Vec<&str> = arguments.split(' ').collect();
-    let commands = arguments[0].to_lowercase();
-    #[cfg(not(target_arch = "x86"))]
-    if commands.contains(CMD_CITRIX) {
-        error!("Citrix registration not supported for non-X86 builds");
-        return ERROR_INVALID_PARAMETER.into();
-    }
-    let scope_hkey = if commands.contains(CMD_LOCAL_MACHINE) {
-        LOCAL_MACHINE
-    } else {
-        CURRENT_USER
-    };
-    if install {
-        if commands.contains(CMD_COM_SERVER) {
-            if arguments.len() == 1 {
-                error!("No channel names provided");
-                return ERROR_INVALID_PARAMETER.into();
-            }
-            let mut file_name = [0u16; 256];
-            let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
-            let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut()) };
-            if len == 0 {
-                let e = windows::core::Error::from_thread();
-                error!("Error calling GetModuleFileNameW: {}", e);
-                return e.into();
-            }
-            let path_string = String::from_utf16_lossy(&file_name[..len as usize]);
-            if let Err(e) = inproc_server_add_to_registry(
-                scope_hkey,
-                COM_CLS_FOLDER,
-                &path_string,
-                &arguments[1..],
-            ) {
-                error!("Error calling inproc_server_add_to_registry: {}", e);
-                return e.into();
-            }
-        }
-        if commands.contains(CMD_MSTS)
-            && let Err(e) = msts_add_to_registry(scope_hkey)
-        {
-            error!("Error calling msts_add_to_registry: {}", e);
-            return e.into();
-        }
-        #[cfg(target_arch = "x86")]
-        if commands.contains(CMD_CITRIX) {
-            if let Err(e) = ctx_add_to_registry(scope_hkey) {
-                error!("Error calling ctx_add_to_registry: {}", e);
-                return e.into();
-            }
-        }
-    } else {
-        #[cfg(target_arch = "x86")]
-        if commands.contains(CMD_CITRIX) {
-            if let Err(e) = ctx_delete_from_registry(scope_hkey) {
-                error!("Error calling ctx_delete_from_registry: {}", e);
-                return e.into();
-            }
-        }
-        if commands.contains(CMD_MSTS)
-            && let Err(e) =
-                delete_from_registry(scope_hkey, TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME)
-        {
-            error!("Error calling delete_from_registry: {}", e);
-            return e.into();
-        }
-        if commands.contains(CMD_COM_SERVER)
-            && let Err(e) = delete_from_registry(
-                scope_hkey,
-                COM_CLS_FOLDER,
-                &format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
-            )
-        {
-            error!("Error calling delete_from_registry: {}", e);
-            return e.into();
-        }
-    }
-    S_OK
+	let install = install.as_bool();
+	debug!("DllInstall called");
+	if cmd_line.is_null() {
+		error!("No command line provided");
+		return ERROR_INVALID_PARAMETER.into();
+	}
+	let arguments: String = match unsafe { cmd_line.to_string() } {
+		Ok(s) => {
+			trace!("Command line has: {}", &s);
+			s
+		}
+		Err(e) => {
+			error!("Couldn't convert arguments from PCWSTR: {}", e);
+			return ERROR_INVALID_PARAMETER.into();
+		}
+	};
+	if arguments.is_empty() {
+		error!("No arguments provided");
+		return ERROR_INVALID_PARAMETER.into();
+	}
+	let arguments: Vec<&str> = arguments.split(' ').collect();
+	let commands = arguments[0].to_lowercase();
+	#[cfg(not(target_arch = "x86"))]
+	if commands.contains(CMD_CITRIX) {
+		error!("Citrix registration not supported for non-X86 builds");
+		return ERROR_INVALID_PARAMETER.into();
+	}
+	let scope_hkey =
+		if commands.contains(CMD_LOCAL_MACHINE) { LOCAL_MACHINE } else { CURRENT_USER };
+	if install {
+		if commands.contains(CMD_COM_SERVER) {
+			if arguments.len() == 1 {
+				error!("No channel names provided");
+				return ERROR_INVALID_PARAMETER.into();
+			}
+			let mut file_name = [0u16; 256];
+			let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
+			let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut()) };
+			if len == 0 {
+				let e = windows::core::Error::from_thread();
+				error!("Error calling GetModuleFileNameW: {}", e);
+				return e.into();
+			}
+			let path_string = String::from_utf16_lossy(&file_name[..len as usize]);
+			if let Err(e) = inproc_server_add_to_registry(
+				scope_hkey,
+				COM_CLS_FOLDER,
+				&path_string,
+				&arguments[1..],
+			) {
+				error!("Error calling inproc_server_add_to_registry: {}", e);
+				return e.into();
+			}
+		}
+		if commands.contains(CMD_MSTS)
+			&& let Err(e) = msts_add_to_registry(scope_hkey)
+		{
+			error!("Error calling msts_add_to_registry: {}", e);
+			return e.into();
+		}
+		#[cfg(target_arch = "x86")]
+		if commands.contains(CMD_CITRIX) {
+			if let Err(e) = ctx_add_to_registry(scope_hkey) {
+				error!("Error calling ctx_add_to_registry: {}", e);
+				return e.into();
+			}
+		}
+	} else {
+		#[cfg(target_arch = "x86")]
+		if commands.contains(CMD_CITRIX) {
+			if let Err(e) = ctx_delete_from_registry(scope_hkey) {
+				error!("Error calling ctx_delete_from_registry: {}", e);
+				return e.into();
+			}
+		}
+		if commands.contains(CMD_MSTS)
+			&& let Err(e) =
+				delete_from_registry(scope_hkey, TS_ADD_INS_FOLDER, TS_ADD_IN_RD_PIPE_FOLDER_NAME)
+		{
+			error!("Error calling delete_from_registry: {}", e);
+			return e.into();
+		}
+		if commands.contains(CMD_COM_SERVER)
+			&& let Err(e) = delete_from_registry(
+				scope_hkey,
+				COM_CLS_FOLDER,
+				&format!("{{{:?}}}", CLSID_RD_PIPE_PLUGIN),
+			) {
+			error!("Error calling delete_from_registry: {}", e);
+			return e.into();
+		}
+	}
+	S_OK
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn test_cmd_constants() {
-        // Verify command constants are distinct
-        assert_ne!(CMD_COM_SERVER, CMD_MSTS);
-        assert_ne!(CMD_COM_SERVER, CMD_CITRIX);
-        assert_ne!(CMD_COM_SERVER, CMD_LOCAL_MACHINE);
-        assert_ne!(CMD_MSTS, CMD_CITRIX);
-        assert_ne!(CMD_MSTS, CMD_LOCAL_MACHINE);
-        assert_ne!(CMD_CITRIX, CMD_LOCAL_MACHINE);
-    }
+	#[test]
+	fn test_cmd_constants() {
+		// Verify command constants are distinct
+		assert_ne!(CMD_COM_SERVER, CMD_MSTS);
+		assert_ne!(CMD_COM_SERVER, CMD_CITRIX);
+		assert_ne!(CMD_COM_SERVER, CMD_LOCAL_MACHINE);
+		assert_ne!(CMD_MSTS, CMD_CITRIX);
+		assert_ne!(CMD_MSTS, CMD_LOCAL_MACHINE);
+		assert_ne!(CMD_CITRIX, CMD_LOCAL_MACHINE);
+	}
 
-    #[test]
-    fn test_clsid_matches_registry() {
-        // Verify the CLSID used in lib.rs matches the one in registry module
-        assert_eq!(CLSID_RD_PIPE_PLUGIN, registry::CLSID_RD_PIPE_PLUGIN);
-    }
+	#[test]
+	fn test_clsid_matches_registry() {
+		// Verify the CLSID used in lib.rs matches the one in registry module
+		assert_eq!(CLSID_RD_PIPE_PLUGIN, registry::CLSID_RD_PIPE_PLUGIN);
+	}
 
-    #[test]
-    fn test_instance_atomic_initial_value() {
-        // The INSTANCE atomic should be initialized (it gets set in DllMain)
-        // We can at least verify it exists and is accessible
-        let val = INSTANCE.load(Ordering::Acquire);
-        // In tests, it might be 0 if DllMain hasn't been called
-        assert!(val >= 0);
-    }
+	#[test]
+	fn test_instance_atomic_initial_value() {
+		// The INSTANCE atomic should be initialized (it gets set in DllMain)
+		// We can at least verify it exists and is accessible
+		let val = INSTANCE.load(Ordering::Acquire);
+		// In tests, it might be 0 if DllMain hasn't been called
+		assert!(val >= 0);
+	}
 
-    #[test]
-    fn test_async_runtime_lazy_init() {
-        // Test that accessing the runtime doesn't panic
-        // This forces initialization of the LazyLock
-        let _handle = ASYNC_RUNTIME.handle();
-        // If we get here without panicking, the runtime initialized successfully
-    }
+	#[test]
+	fn test_async_runtime_lazy_init() {
+		// Test that accessing the runtime doesn't panic
+		// This forces initialization of the LazyLock
+		let _handle = ASYNC_RUNTIME.handle();
+		// If we get here without panicking, the runtime initialized successfully
+	}
 
-    #[test]
-    fn test_dll_install_command_parsing() {
-        // Test command string parsing logic
-        let test_cmds = vec![
-            ("c", true, false, false, false),
-            ("r", false, true, false, false),
-            ("x", false, false, true, false),
-            ("m", false, false, false, true),
-            ("cm", true, false, false, true),
-            ("cr", true, true, false, false),
-            ("crm", true, true, false, true),
-            ("cx", true, false, true, false),
-            ("cxm", true, false, true, true),
-            ("rx", false, true, true, false),
-            ("crx", true, true, true, false),
-            ("crxm", true, true, true, true),
-        ];
+	#[test]
+	fn test_dll_install_command_parsing() {
+		// Test command string parsing logic
+		let test_cmds = vec![
+			("c", true, false, false, false),
+			("r", false, true, false, false),
+			("x", false, false, true, false),
+			("m", false, false, false, true),
+			("cm", true, false, false, true),
+			("cr", true, true, false, false),
+			("crm", true, true, false, true),
+			("cx", true, false, true, false),
+			("cxm", true, false, true, true),
+			("rx", false, true, true, false),
+			("crx", true, true, true, false),
+			("crxm", true, true, true, true),
+		];
 
-        for (cmd, expect_c, expect_r, expect_x, expect_m) in test_cmds {
-            let cmd_lower = cmd.to_lowercase();
-            assert_eq!(
-                cmd_lower.contains(CMD_COM_SERVER),
-                expect_c,
-                "Failed for '{}'",
-                cmd
-            );
-            assert_eq!(
-                cmd_lower.contains(CMD_MSTS),
-                expect_r,
-                "Failed for '{}'",
-                cmd
-            );
-            assert_eq!(
-                cmd_lower.contains(CMD_CITRIX),
-                expect_x,
-                "Failed for '{}'",
-                cmd
-            );
-            assert_eq!(
-                cmd_lower.contains(CMD_LOCAL_MACHINE),
-                expect_m,
-                "Failed for '{}'",
-                cmd
-            );
-        }
-    }
+		for (cmd, expect_c, expect_r, expect_x, expect_m) in test_cmds {
+			let cmd_lower = cmd.to_lowercase();
+			assert_eq!(cmd_lower.contains(CMD_COM_SERVER), expect_c, "Failed for '{}'", cmd);
+			assert_eq!(cmd_lower.contains(CMD_MSTS), expect_r, "Failed for '{}'", cmd);
+			assert_eq!(cmd_lower.contains(CMD_CITRIX), expect_x, "Failed for '{}'", cmd);
+			assert_eq!(cmd_lower.contains(CMD_LOCAL_MACHINE), expect_m, "Failed for '{}'", cmd);
+		}
+	}
 }
