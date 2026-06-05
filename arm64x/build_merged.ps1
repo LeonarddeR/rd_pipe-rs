@@ -7,17 +7,21 @@
 #   -Arm64ecDll : path to target\arm64ec-pc-windows-msvc\release\rd_pipe.dll
 #   -OutDir     : directory to place the merged rd_pipe.dll
 #
-# Final link uses /MACHINE:ARM64X via rust-lld from the active rustc
-# toolchain. Explicit Windows SDK import libs are passed because Rust
-# staticlibs do not embed them; they reference SDK symbols via
-# raw_dylib stubs that the ARM64X linker cannot resolve without proper
-# import libraries.
+# Requires a VS Developer Command Prompt environment (vcvarsall arm64 or the
+# ilammy/msvc-dev-cmd action with arch:arm64). This sets:
+#   VCToolsInstallDir -> MSVC tool + lib root
+#   WindowsSdkDir + WindowsSDKVersion -> SDK lib root
+#   LIB               -> arm64 MSVC + arm64 ucrt + arm64 um (native view)
 #
-# DEF files are generated on the fly from the per-arch DLLs via
-# llvm-readobj --coff-exports so the merged binary's export table is the
-# exact union of the per-arch tables (DllMain, DllGetClassObject,
-# DllInstall, plus anything Rust adds in the future). Avoids drift
-# between a hand-maintained DEF and what rustc actually exports.
+# link.exe and dumpbin.exe are resolved directly from VCToolsInstallDir\bin\HostX64\x64
+# to avoid two PATH hazards on GitHub-hosted Windows runners:
+#   - vcvarsall x64_arm64 only prepends HostX64\arm64, leaving dumpbin off PATH.
+#   - Git for Windows ships usr\bin\link.exe (a Unix tool) before MSVC on PATH.
+#
+# Uses MSVC link.exe (/machine:arm64x). lld-link is NOT used: it corrupts the
+# EC view's TLS directory when merging two Rust staticlibs into one ARM64X image.
+#
+# DEF files generated via dumpbin /exports; no llvm-tools component needed.
 
 [CmdletBinding()]
 param(
@@ -30,86 +34,117 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Resolve rust-lld + llvm-readobj bundled with the active rustc toolchain.
-# llvm-readobj requires the `llvm-tools` rustup component.
-$sysroot = (& rustc --print sysroot).Trim()
-$hostTriple = (& rustc -vV | Select-String '^host:').ToString().Split(' ', 2)[1].Trim()
-$rustlibBin = Join-Path $sysroot "lib\rustlib\$hostTriple\bin"
-$linkExe = Join-Path $rustlibBin 'gcc-ld\lld-link.exe'
-$readobjExe = Join-Path $rustlibBin 'llvm-readobj.exe'
-if (-not (Test-Path -LiteralPath $linkExe)) {
-    throw "rust-lld not found at $linkExe"
+# Validate vcvars environment.
+foreach ($v in 'VCToolsInstallDir', 'WindowsSdkDir', 'WindowsSDKVersion') {
+    if (-not (Get-Item "Env:$v" -ErrorAction SilentlyContinue)) {
+        throw "$v not set — run inside a VS Developer Command Prompt (vcvarsall arm64)."
+    }
 }
-if (-not (Test-Path -LiteralPath $readobjExe)) {
-    throw "llvm-readobj not found at $readobjExe (install rustup component 'llvm-tools')"
+
+$msvcLib = Join-Path $env:VCToolsInstallDir.TrimEnd('\/') 'lib'
+$sdkLib  = Join-Path $env:WindowsSdkDir.TrimEnd('\/') "Lib\$($env:WindowsSDKVersion.TrimEnd('\/'))"
+
+Write-Host "==> MSVC lib root:    $msvcLib"
+Write-Host "==> Windows SDK root: $sdkLib"
+
+# dumpbin.exe and link.exe must be resolved via VCToolsInstallDir rather than
+# relying on PATH. Two PATH hazards on GitHub-hosted runners:
+#
+#   1. vcvarsall x64_arm64 (ilammy/msvc-dev-cmd arch:arm64) prepends
+#      HostX64\arm64 but NOT HostX64\x64, so dumpbin.exe is missing from PATH.
+#
+#   2. Git for Windows ships C:\Program Files\Git\usr\bin\link.exe (a Unix
+#      hard-link tool) earlier on PATH than any MSVC entry, so bare "link.exe"
+#      resolves to the wrong binary.
+#
+# HostX64\x64\{dumpbin,link}.exe is always present for an x64 VS install and
+# supports all /machine targets including arm64x.
+$vcBinX64   = Join-Path $env:VCToolsInstallDir "bin\HostX64\x64"
+$dumpbinExe = Join-Path $vcBinX64 "dumpbin.exe"
+$linkExe    = Join-Path $vcBinX64 "link.exe"
+foreach ($exe in $dumpbinExe, $linkExe) {
+    if (-not (Test-Path $exe)) { throw "$exe not found — check VCToolsInstallDir" }
 }
+Write-Host "==> dumpbin: $dumpbinExe"
+Write-Host "==> link:    $linkExe"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-# Generate a DEF file from a per-arch DLL via `llvm-readobj --coff-exports`.
-# Output format:
-#   Export {
-#     Ordinal: <n>
-#     Name: <symbol>
-#     RVA: 0x<hex>
-#   }
-# We extract every `Name:` line. Order doesn't matter for /def.
+# Generate a DEF file from a per-arch DLL via dumpbin /exports.
+#
+# DllGetClassObject and DllInstall are COM/regsvr32 entry points looked up via
+# GetProcAddress; they must be PRIVATE (no import-lib entry) to suppress LNK4104.
+$privateExports = @('DllGetClassObject', 'DllInstall')
+
 function New-DefFromDll {
     param([string]$Dll, [string]$DefPath)
-    $names = & $readobjExe --coff-exports $Dll |
-        Select-String '^\s*Name: (\S+)$' |
+    $names = & $dumpbinExe /exports $Dll 2>&1 |
+        Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)' |
         ForEach-Object { $_.Matches[0].Groups[1].Value }
-    if (-not $names) {
-        throw "No exports found in $Dll via $readobjExe"
+    if (-not $names) { throw "No exports found in $Dll" }
+    $lines = $names | ForEach-Object {
+        if ($_ -in $privateExports) { "    $_ PRIVATE" } else { "    $_" }
     }
-    $lines = @('EXPORTS') + ($names | ForEach-Object { "    $_" })
-    Set-Content -Path $DefPath -Value $lines -Encoding ASCII
-    Write-Host "==> Generated $DefPath ($($names.Count) exports): $($names -join ', ')"
+    Set-Content -Path $DefPath -Value (@('EXPORTS') + $lines) -Encoding ASCII
+    Write-Host "==> $DefPath ($($names.Count) exports): $($names -join ', ')"
 }
 
-$defArm64 = Join-Path $OutDir 'rd_pipe.arm64.def'
+$defArm64   = Join-Path $OutDir 'rd_pipe.arm64.def'
 $defArm64ec = Join-Path $OutDir 'rd_pipe.arm64ec.def'
 New-DefFromDll -Dll $Arm64Dll   -DefPath $defArm64
 New-DefFromDll -Dll $Arm64ecDll -DefPath $defArm64ec
 
-# Minimum Windows SDK / CRT import libs needed for the link to succeed.
-# Determined empirically by drop-one probing against rust-lld 22.1.2:
-# - kernel32.lib  : __chkstk, _tls_index/_tls_used, baseline Win32
-# - msvcrt.lib    : _CxxThrowException, __CxxFrameHandler3 (ARM64EC)
-# - ucrt.lib      : memcpy/memset/memmove/memcmp, wcslen, etc.
-# - vcruntime.lib : softintrin / icall helpers (ARM64EC)
-# All other Win32 imports (advapi32, bcrypt, ntdll, ole32, oleaut32,
-# userenv, ws2_32, synchronization) are pulled in transitively via the
-# Rust staticlibs' raw_dylib stubs.
-$sdkLibs = @(
+# Import libs for the /machine:arm64x link.
+#
+# arm64 (native) view: LIB env covers these; passed by bare name.
+#
+# arm64ec (EC) view: ARM64EC uses x64 calling convention, so the SDK stores
+#   its import libs under the x64 subdirectory (no separate arm64ec dir).
+#   MSVC CRT helpers (vcruntime, msvcrt) use the arm64 dir — same native
+#   code runs for both views. Passed by full path since LIB is arm64-only.
+#   arm64\msvcrt.lib provides __icall_helper_arm64ec for EC raw_dylib stubs.
+#   softintrin.lib (arm64ec view only) is under SDK um\x64.
+$importLibs = @(
+    # arm64 native view — resolved via LIB env
+    'vcruntime.lib',
     'kernel32.lib',
-    'msvcrt.lib',
-    'ucrt.lib',
-    'vcruntime.lib'
+    'ntdll.lib',
+    'userenv.lib',
+    'ws2_32.lib',
+    'dbghelp.lib',
+    # arm64ec view — SDK arm64ec libs live under x64 subdir; MSVC CRT from arm64 dir
+    "$msvcLib\arm64\vcruntime.lib",
+    "$sdkLib\um\x64\kernel32.Lib",
+    "$sdkLib\um\x64\ntdll.lib",
+    "$sdkLib\um\x64\UserEnv.Lib",
+    "$sdkLib\um\x64\WS2_32.Lib",
+    "$sdkLib\um\x64\DbgHelp.Lib",
+    "$sdkLib\um\x64\softintrin.lib"
 )
+
+# msvcrt.lib passed after staticlibs (via /NODEFAULTLIB + explicit path) so
+# the linker processes our DllMain objects first. The msvcrt stub DllMain wins
+# via /force:multiple but correctly chains through _pRawDllMain to our DllMain.
+# arm64\msvcrt.lib serves both views: it provides __icall_helper_arm64ec for
+# the arm64ec raw_dylib stubs as well as the native CRT startup glue.
+$msvcrtLib = "$msvcLib\arm64\msvcrt.lib"
 
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
 
-Write-Host "==> Linking ARM64X merged DLL with $linkExe"
-# /entry:DllMain ensures the loader calls our Rust DllMain rather than the
-# msvcrt stub (msvcrt provides a no-op _DllMainCRTStartup; we want our own).
-# /force:multiple resolves the resulting duplicate-symbol diagnostic in
-# favor of the input listed first (the Rust staticlibs).
-# /defArm64Native + /def supply the export tables for the ARM64 native and
-# ARM64EC views respectively. Each DEF is generated from the matching
-# per-arch DLL so the merged binary exposes the exact union of exports
-# rustc emitted for each arch.
+Write-Host "==> Linking ARM64X DLL..."
 & $linkExe `
-    /dll /machine:arm64x /nologo `
-    /noimplib `
-    /entry:DllMain `
-    /force:multiple `
-    "/defArm64Native:$defArm64" `
-    "/def:$defArm64ec" `
+    /dll /machine:arm64x /nologo /noimplib /force:multiple `
+    "/ignore:4001" "/ignore:4006" "/ignore:4088" `
+    "/NODEFAULTLIB:msvcrt" `
+    "/LIBPATH:$msvcLib\arm64" `
+    "/LIBPATH:$sdkLib\ucrt\arm64" `
+    "/LIBPATH:$sdkLib\um\arm64" `
+    "/LIBPATH:$sdkLib\ucrt\x64" `
+    "/LIBPATH:$sdkLib\um\x64" `
+    "/defArm64Native:$defArm64" "/def:$defArm64ec" `
     "/out:$outDll" `
-    $Arm64Lib $Arm64ecLib `
-    @sdkLibs
-if ($LASTEXITCODE -ne 0) { throw "rust-lld failed" }
+    $Arm64Lib $Arm64ecLib @importLibs $msvcrtLib
+if ($LASTEXITCODE -ne 0) { throw "link.exe failed ($LASTEXITCODE)" }
 
-Write-Host "==> Merged ARM64X DLL built: $outDll"
+Write-Host "==> Built: $outDll"
 Get-Item $outDll | Format-List FullName, Length, LastWriteTime

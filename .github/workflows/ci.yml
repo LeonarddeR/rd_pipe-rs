@@ -43,28 +43,34 @@ jobs:
         include:
           - name: x86
             target: i686-pc-windows-msvc
-            runner: windows-2025
+            runner: windows-2025-vs2026
             artifact: rd_pipe-x86
+            toolchain: stable
           - name: x64
             target: x86_64-pc-windows-msvc
-            runner: windows-2025
+            runner: windows-2025-vs2026
             artifact: rd_pipe-x64
+            toolchain: stable
           - name: arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64
+            toolchain: nightly
           - name: arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64ec
+            toolchain: nightly
           - name: arm64x-on-arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
+            toolchain: nightly
           - name: arm64x-on-arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
+            toolchain: nightly
 
     steps:
       - uses: actions/checkout@v6
@@ -72,7 +78,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: ${{ matrix.toolchain }}
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -108,19 +114,23 @@ jobs:
 
   build:
     name: Build
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: i686-pc-windows-msvc
             suffix: x86
+            toolchain: stable
           - target: x86_64-pc-windows-msvc
             suffix: x64
+            toolchain: stable
           - target: aarch64-pc-windows-msvc
             suffix: arm64
+            toolchain: nightly
           - target: arm64ec-pc-windows-msvc
             suffix: arm64ec
+            toolchain: nightly
 
     steps:
       - uses: actions/checkout@v6
@@ -128,7 +138,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: ${{ matrix.toolchain }}
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -160,7 +170,7 @@ jobs:
   build-arm64x:
     name: Build ARM64X merged DLL
     needs: build
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
 
@@ -176,11 +186,10 @@ jobs:
           name: rd_pipe-arm64ec
           path: artifacts/arm64ec
 
-      - name: Install rust
-        uses: dtolnay/rust-toolchain@master
+      - name: Set up VS Developer Command Prompt (arm64)
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          toolchain: stable
-          components: llvm-tools
+          arch: arm64
 
       - name: Build merged ARM64X DLL
         shell: pwsh

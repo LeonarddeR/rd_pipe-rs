@@ -23,6 +23,26 @@ cargo fmt --all -- --check                         # CI style check
 
 CI matrix targets: `i686`, `x86_64`, `aarch64`, `arm64ec` — all `*-pc-windows-msvc`. Citrix registration code (`ctx_*`) is `#[cfg(target_arch = "x86")]` only.
 
+## ARM64X merged DLL (`arm64x/build_merged.ps1`)
+
+The `aarch64` + `arm64ec` staticlibs are linked into one ARM64X (hybrid) DLL by `arm64x/build_merged.ps1`, using **MSVC link.exe** (`/machine:arm64x`, discovered via vswhere) and `llvm-readobj` from the active rustc toolchain (needs the `llvm-tools` component). Per-arch export tables are generated on the fly from each DLL via `llvm-readobj --coff-exports`.
+
+**Why MSVC link.exe, not rust-lld (`lld-link.exe`)**: lld corrupts the EC view's TLS directory (`_tls_used`/`_tls_index`/TLS-callback table) when merging two full Rust staticlibs into one ARM64X image, causing `fatal runtime error: the System allocator may not use TLS with destructors` (0xc0000409) on the EC view at test time. MSVC link.exe handles the ARM64X TLS merge correctly.
+
+One hard requirement:
+
+- **Toolchain must be `nightly`.** `arm64ec` staticlibs built on stable/beta crash at `0xc0000096` when an ARM64X DLL is loaded from an x64 process on ARM64 Windows (rust-lang/rust#145154). Fixed by #148799 (TLS dtors → FLS), first in nightly `1.98.0` (2026-06-03). The `Test (arm64x-on-arm64ec)` job is the gate; it only runs on the `windows-11-arm` runner.
+
+Link recipe (dynamic CRT, MSVC link.exe):
+- Both per-arch staticlibs as explicit inputs (`rd_pipe.lib` arm64 + arm64ec)
+- `arm64\vcruntime.lib` + `arm64\msvcrt.lib` (arm64 MSVC CRT libs serve both views; arm64\msvcrt.lib provides `__icall_helper_arm64ec` for the EC view's raw_dylib import stubs)
+- `um\arm64\{kernel32,ntdll,userenv,ws2_32,dbghelp}` + `um\x64\{same}` + `um\x64\softintrin.lib`
+- `/LIBPATH:` for MSVC arm64+x64 and SDK ucrt/um arm64+x64 dirs (resolves `.drectve /defaultlib:` entries without vcvars)
+- `/force:multiple` resolves duplicate `DllMain` (arm64 + arm64ec each define it, plus msvcrt's stub); msvcrt's stub wins but correctly chains through `_pRawDllMain` → user DllMain
+- No SDK version constraint (both 26100 and 28000 work)
+
+The script can be exercised on a Windows ARM64 host: build both staticlibs+DLLs (`cargo +nightly build --release --target {aarch64,arm64ec}-pc-windows-msvc`), run the script, then validate the merged DLL with `RD_PIPE_DLL_PATH=<dll> cargo +nightly nextest run --target {aarch64,arm64ec}-pc-windows-msvc -E 'binary(dll_smoke) or binary(dvc_emulation)'`.
+
 ## Registration (DllInstall)
 
 `regsvr32 /i:"<flags> <ChannelName1> <ChannelName2> ..." rd_pipe.dll` drives registration via `DllInstall`. Flag chars parsed from arg[0]:
