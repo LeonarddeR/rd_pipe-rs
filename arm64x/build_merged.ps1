@@ -71,13 +71,26 @@ Write-Host "==> link:    $linkExe"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # Generate a DEF file from a per-arch DLL via dumpbin /exports.
+#
+# DllMain is the DLL entry point — it is not a named export and must not appear
+# in the DEF file (causes LNK4006 duplicate-symbol warning against msvcrt's stub).
+#
+# DllGetClassObject and DllInstall are COM/regsvr32 entry points looked up via
+# GetProcAddress; they must be PRIVATE (no import-lib entry) to suppress LNK4104.
+$privateExports = @('DllGetClassObject', 'DllInstall')
+$skipExports    = @('DllMain')
+
 function New-DefFromDll {
     param([string]$Dll, [string]$DefPath)
     $names = & $dumpbinExe /exports $Dll 2>&1 |
         Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)' |
-        ForEach-Object { $_.Matches[0].Groups[1].Value }
+        ForEach-Object { $_.Matches[0].Groups[1].Value } |
+        Where-Object { $_ -notin $skipExports }
     if (-not $names) { throw "No exports found in $Dll" }
-    Set-Content -Path $DefPath -Value (@('EXPORTS') + ($names | ForEach-Object { "    $_" })) -Encoding ASCII
+    $lines = $names | ForEach-Object {
+        if ($_ -in $privateExports) { "    $_ PRIVATE" } else { "    $_" }
+    }
+    Set-Content -Path $DefPath -Value (@('EXPORTS') + $lines) -Encoding ASCII
     Write-Host "==> $DefPath ($($names.Count) exports): $($names -join ', ')"
 }
 
@@ -126,6 +139,7 @@ $outDll = Join-Path $OutDir 'rd_pipe.dll'
 Write-Host "==> Linking ARM64X DLL..."
 & $linkExe `
     /dll /machine:arm64x /nologo /noimplib /force:multiple `
+    "/ignore:4001,4088" `
     "/NODEFAULTLIB:msvcrt" `
     "/LIBPATH:$msvcLib\arm64" `
     "/LIBPATH:$sdkLib\ucrt\arm64" `
