@@ -9,10 +9,14 @@
 #
 # Requires a VS Developer Command Prompt environment (vcvarsall arm64 or the
 # ilammy/msvc-dev-cmd action with arch:arm64). This sets:
-#   PATH              -> link.exe, dumpbin.exe
-#   VCToolsInstallDir -> MSVC lib root
+#   VCToolsInstallDir -> MSVC tool + lib root
 #   WindowsSdkDir + WindowsSDKVersion -> SDK lib root
 #   LIB               -> arm64 MSVC + arm64 ucrt + arm64 um (native view)
+#
+# link.exe and dumpbin.exe are resolved directly from VCToolsInstallDir\bin\HostX64\x64
+# to avoid two PATH hazards on GitHub-hosted Windows runners:
+#   - vcvarsall x64_arm64 only prepends HostX64\arm64, leaving dumpbin off PATH.
+#   - Git for Windows ships usr\bin\link.exe (a Unix tool) before MSVC on PATH.
 #
 # Uses MSVC link.exe (/machine:arm64x). lld-link is NOT used: it corrupts the
 # EC view's TLS directory when merging two Rust staticlibs into one ARM64X image.
@@ -43,16 +47,26 @@ $sdkLib  = Join-Path $env:WindowsSdkDir.TrimEnd('\/') "Lib\$($env:WindowsSDKVers
 Write-Host "==> MSVC lib root:    $msvcLib"
 Write-Host "==> Windows SDK root: $sdkLib"
 
-# dumpbin.exe lives in Hostx64\x64 — not always on PATH when vcvars is set up
-# for a cross-compilation target (e.g. vcvarsall x64_arm64 only prepends Hostx64\arm64).
-$dumpbinExe = (Get-Command dumpbin -ErrorAction SilentlyContinue)?.Source
-if (-not $dumpbinExe) {
-    $dumpbinExe = Join-Path $env:VCToolsInstallDir "bin\HostX64\x64\dumpbin.exe"
-    if (-not (Test-Path $dumpbinExe)) {
-        throw "dumpbin.exe not found on PATH or at $dumpbinExe"
-    }
-    Write-Host "==> dumpbin: $dumpbinExe (resolved via VCToolsInstallDir)"
+# dumpbin.exe and link.exe must be resolved via VCToolsInstallDir rather than
+# relying on PATH. Two PATH hazards on GitHub-hosted runners:
+#
+#   1. vcvarsall x64_arm64 (ilammy/msvc-dev-cmd arch:arm64) prepends
+#      HostX64\arm64 but NOT HostX64\x64, so dumpbin.exe is missing from PATH.
+#
+#   2. Git for Windows ships C:\Program Files\Git\usr\bin\link.exe (a Unix
+#      hard-link tool) earlier on PATH than any MSVC entry, so bare "link.exe"
+#      resolves to the wrong binary.
+#
+# HostX64\x64\{dumpbin,link}.exe is always present for an x64 VS install and
+# supports all /machine targets including arm64x.
+$vcBinX64   = Join-Path $env:VCToolsInstallDir "bin\HostX64\x64"
+$dumpbinExe = Join-Path $vcBinX64 "dumpbin.exe"
+$linkExe    = Join-Path $vcBinX64 "link.exe"
+foreach ($exe in $dumpbinExe, $linkExe) {
+    if (-not (Test-Path $exe)) { throw "$exe not found — check VCToolsInstallDir" }
 }
+Write-Host "==> dumpbin: $dumpbinExe"
+Write-Host "==> link:    $linkExe"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -110,7 +124,7 @@ $msvcrtLib = "$msvcLib\arm64\msvcrt.lib"
 $outDll = Join-Path $OutDir 'rd_pipe.dll'
 
 Write-Host "==> Linking ARM64X DLL..."
-link.exe `
+& $linkExe `
     /dll /machine:arm64x /nologo /noimplib /force:multiple `
     "/NODEFAULTLIB:msvcrt" `
     "/LIBPATH:$msvcLib\arm64" `
