@@ -30,6 +30,7 @@ crate-type = ["cdylib", "staticlib"]
 lto = true
 codegen-units = 1
 opt-level = "s"
+strip = "debuginfo"
 
 [dependencies]
 parking_lot = "0.12.5"
