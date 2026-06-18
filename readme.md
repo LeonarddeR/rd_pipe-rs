@@ -65,6 +65,25 @@ regsvr32 /u /i:"crm" rd_pipe.dll
 
 Log level is read from `LogLevel` (REG_DWORD, 1–5) under the CLSID key in `HKCU` (fallback `HKLM`), mapped to `tracing` levels. Output is written to `%TEMP%\RdPipe.log`.
 
+## Releasing
+
+Releases are driven by [cargo-release](https://github.com/crate-ci/cargo-release)
+(`cargo install cargo-release`). The crate is not published to crates.io; the
+tag is what CI builds and publishes.
+
+1. Record notable changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+2. From `master`, run a dry run, then execute:
+
+   ```
+   cargo release patch --dry-run   # or minor | major | <x.y.z>
+   cargo release patch --execute
+   ```
+
+   cargo-release runs `cargo fmt --check`, bumps `Cargo.toml`, updates
+   `Cargo.lock`, stamps `CHANGELOG.md`, commits, tags `vX.Y.Z`, and pushes.
+3. The pushed tag triggers CI, which builds all targets and publishes the GitHub
+   release.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
