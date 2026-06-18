@@ -12,9 +12,11 @@ tag-message = "Release {{version}}"
 pre-release-commit-message = "chore: release {{version}}"
 allow-branch = ["master"]
 
-# fmt gate before tagging. Tests require real targets/DLL artifacts (see
-# TESTING.md) and remain CI's responsibility.
-pre-release-hook = ["cargo", "fmt", "--all", "--", "--check"]
+# Local release gate: clippy (warnings as errors) then the full test suite
+# (cargo test builds the cdylib and runs unit + integration tests against it).
+# cargo-release allows one hook command, so the two are chained via cmd /c.
+# fmt stays gated by CI's style job.
+pre-release-hook = ["cmd", "/c", "cargo clippy --all-targets -- -D warnings && cargo test"]
 
 # Stamp the version/date into CHANGELOG.md on each release.
 pre-release-replacements = [
