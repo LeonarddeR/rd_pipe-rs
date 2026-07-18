@@ -44,7 +44,7 @@ use windows::{
 		System::{
 			Com::IClassFactory,
 			LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW},
-			SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
+			SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH, UNICODE_STRING_MAX_CHARS},
 		},
 	},
 	core::{GUID, HRESULT, Interface, PCWSTR},
@@ -191,7 +191,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 				error!("No channel names provided");
 				return ERROR_INVALID_PARAMETER.into();
 			}
-			const MAX_MODULE_PATH: usize = 32767;
+			const MAX_MODULE_PATH: usize = UNICODE_STRING_MAX_CHARS as usize;
 			let mut file_name = vec![0u16; 256];
 			let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
 			let path_string = loop {
