@@ -47,12 +47,15 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 		iid: *const GUID,
 		object: *mut *mut c_void,
 	) -> Result<()> {
-		if iid.is_null() || object.is_null() {
+		if object.is_null() {
+			return Err(Error::from(E_POINTER));
+		}
+		let robject = unsafe { &mut *object };
+		*robject = null_mut();
+		if iid.is_null() {
 			return Err(Error::from(E_POINTER));
 		}
 		let riid = unsafe { *iid };
-		let robject = unsafe { &mut *object };
-		*robject = null_mut();
 		trace!("Object with type {:?} requested", riid);
 		if outer.is_some() {
 			return Err(Error::from(CLASS_E_NOAGGREGATION));
