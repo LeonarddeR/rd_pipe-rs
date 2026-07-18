@@ -31,7 +31,7 @@ The `aarch64` + `arm64ec` staticlibs are linked into one ARM64X (hybrid) DLL by 
 
 One hard requirement:
 
-- **Toolchain must be `nightly`.** `arm64ec` staticlibs built on stable/beta crash at `0xc0000096` when an ARM64X DLL is loaded from an x64 process on ARM64 Windows (rust-lang/rust#145154). Fixed by #148799 (TLS dtors → FLS), first in nightly `1.98.0` (2026-06-03). The `Test (arm64x-on-arm64ec)` job is the gate; it only runs on the `windows-11-arm` runner.
+- **Toolchain must be at least `beta` (was `nightly`).** `arm64ec` staticlibs built on a toolchain *without* the TLS-destructors→FLS fix (rust-lang/rust#148799) crash at `0xc0000096` when an ARM64X DLL is loaded from an x64 process on ARM64 Windows (rust-lang/rust#145154). The fix first landed in nightly `1.98.0` (2026-06-03) and, as of 2026-07-17, is in `beta` (`1.98.0-beta.4`, verified: beta contains merge `9c963eec`; arm64ec EC-view tests pass 15/15 on a `windows-11-arm` host). CI therefore uses `beta`. Once `1.98.0` reaches stable the arm64 path can move to `stable`. The `Test (arm64x-on-arm64ec)` job is the gate; it only runs on the `windows-11-arm` runner.
 
 Link recipe (dynamic CRT, MSVC link.exe):
 - Both per-arch staticlibs as explicit inputs (`rd_pipe.lib` arm64 + arm64ec)
@@ -41,7 +41,7 @@ Link recipe (dynamic CRT, MSVC link.exe):
 - `/force:multiple` resolves duplicate `DllMain` (arm64 + arm64ec each define it, plus msvcrt's stub); msvcrt's stub wins but correctly chains through `_pRawDllMain` → user DllMain
 - No SDK version constraint (both 26100 and 28000 work)
 
-The script can be exercised on a Windows ARM64 host: build both staticlibs+DLLs (`cargo +nightly build --release --target {aarch64,arm64ec}-pc-windows-msvc`), run the script, then validate the merged DLL with `RD_PIPE_DLL_PATH=<dll> cargo +nightly nextest run --target {aarch64,arm64ec}-pc-windows-msvc -E 'binary(dll_smoke) or binary(dvc_emulation)'`.
+The script can be exercised on a Windows ARM64 host: build both staticlibs+DLLs (`cargo +beta build --release --target {aarch64,arm64ec}-pc-windows-msvc`), run the script, then validate the merged DLL with `RD_PIPE_DLL_PATH=<dll> cargo +beta nextest run --target {aarch64,arm64ec}-pc-windows-msvc -E 'binary(dll_smoke) or binary(dvc_emulation)'`.
 
 ## Registration (DllInstall)
 

@@ -55,22 +55,22 @@ jobs:
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64
-            toolchain: nightly
+            toolchain: beta
           - name: arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64ec
-            toolchain: nightly
+            toolchain: beta
           - name: arm64x-on-arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
-            toolchain: nightly
+            toolchain: beta
           - name: arm64x-on-arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
-            toolchain: nightly
+            toolchain: beta
 
     steps:
       - uses: actions/checkout@v7
@@ -127,10 +127,10 @@ jobs:
             toolchain: stable
           - target: aarch64-pc-windows-msvc
             suffix: arm64
-            toolchain: nightly
+            toolchain: beta
           - target: arm64ec-pc-windows-msvc
             suffix: arm64ec
-            toolchain: nightly
+            toolchain: beta
 
     steps:
       - uses: actions/checkout@v7
