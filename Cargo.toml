@@ -32,6 +32,7 @@ lto = true
 codegen-units = 1
 opt-level = "s"
 strip = "debuginfo"
+panic = "abort"
 
 [dependencies]
 parking_lot = "0.12.5"

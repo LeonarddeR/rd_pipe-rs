@@ -388,6 +388,88 @@ fn multiple_channels_produce_multiple_listeners() {
 	drop(plugin);
 }
 
+/// After a client disconnects, the plugin keeps the pipe name claimed
+/// (same instance disconnected and reused), so a second client can connect
+/// and the channel pump keeps working.
+#[test]
+#[serial]
+fn pipe_client_can_reconnect_after_disconnect() {
+	let hkcu = common::HkcuOverride::new().expect("override hkcu");
+	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+
+	let dll = common::DllHandle::load();
+	let plugin = common::create_plugin(dll);
+
+	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+	unsafe {
+		plugin.Initialize(&mgr_iface).expect("Initialize");
+	}
+
+	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
+	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+	let addr = common::channel_addr(&channel_iface);
+
+	common::block_on(async {
+		use tokio::io::AsyncWriteExt;
+
+		let client =
+			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+				.await;
+
+		// Wait for XON from the first connection.
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+		}
+		assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for first XON");
+
+		// Disconnect and wait for XOFF so the plugin has observed it.
+		drop(client);
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		while !chan_state.flat_writes().contains(&0x13u8) {
+			if std::time::Instant::now() >= deadline {
+				panic!("XOFF never written; got {:?}", chan_state.flat_writes());
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+		}
+
+		// Second client connects to the same, still-claimed pipe name.
+		let mut client2 =
+			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
+				.await;
+
+		// Wait for the second XON.
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		while chan_state.flat_writes().iter().filter(|&&b| b == 0x11u8).count() < 2 {
+			if std::time::Instant::now() >= deadline {
+				panic!("second XON never written; got {:?}", chan_state.flat_writes());
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+		}
+
+		// Pipe -> channel still pumps after the reconnect.
+		client2.write_all(b"again").await.expect("pipe write");
+		client2.flush().await.expect("pipe flush");
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		loop {
+			let flat = chan_state.flat_writes();
+			if flat.windows(b"again".len()).any(|w| w == b"again") {
+				break;
+			}
+			if std::time::Instant::now() >= deadline {
+				panic!("payload never arrived on channel after reconnect; got {flat:?}");
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+		}
+	});
+
+	unsafe {
+		chan_cb.OnClose().expect("OnClose");
+	}
+	drop(plugin);
+}
+
 /// Regression test for issue #57: `OnClose` must terminate the reader task
 /// while the client is still connected and any subsequent `OnDataReceived`
 /// must fail with `ERROR_PIPE_NOT_CONNECTED`. Shutdown is driven cooperatively

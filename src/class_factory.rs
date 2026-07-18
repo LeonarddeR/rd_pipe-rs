@@ -16,7 +16,7 @@ use core::{ffi::c_void, fmt, mem::transmute, ptr::null_mut};
 use tracing::{debug, instrument, trace};
 use windows::{
 	Win32::{
-		Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE},
+		Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_POINTER},
 		System::{
 			Com::{IClassFactory, IClassFactory_Impl},
 			RemoteDesktop::IWTSPlugin,
@@ -47,6 +47,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 		iid: *const GUID,
 		object: *mut *mut c_void,
 	) -> Result<()> {
+		if iid.is_null() || object.is_null() {
+			return Err(Error::from(E_POINTER));
+		}
 		let riid = unsafe { *iid };
 		let robject = unsafe { &mut *object };
 		*robject = null_mut();

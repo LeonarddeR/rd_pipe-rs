@@ -191,15 +191,27 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 				error!("No channel names provided");
 				return ERROR_INVALID_PARAMETER.into();
 			}
-			let mut file_name = [0u16; 256];
+			const MAX_MODULE_PATH: usize = 32767;
+			let mut file_name = vec![0u16; 256];
 			let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
-			let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut()) };
-			if len == 0 {
-				let e = windows::core::Error::from_thread();
-				error!("Error calling GetModuleFileNameW: {}", e);
-				return e.into();
-			}
-			let path_string = String::from_utf16_lossy(&file_name[..len as usize]);
+			let path_string = loop {
+				let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut_slice()) }
+					as usize;
+				if len == 0 {
+					let e = windows::core::Error::from_thread();
+					error!("Error calling GetModuleFileNameW: {}", e);
+					return e.into();
+				}
+				if len < file_name.len() {
+					break String::from_utf16_lossy(&file_name[..len]);
+				}
+				if file_name.len() >= MAX_MODULE_PATH {
+					let e = windows::core::Error::from_thread();
+					error!("Module path exceeds {} characters: {}", MAX_MODULE_PATH, e);
+					return e.into();
+				}
+				file_name.resize((file_name.len() * 2).min(MAX_MODULE_PATH), 0);
+			};
 			if let Err(e) = inproc_server_add_to_registry(
 				scope_hkey,
 				COM_CLS_FOLDER,
