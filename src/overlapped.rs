@@ -187,12 +187,13 @@ mod tests {
 		let event = create_event(false).expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let mut buf = [0u8; 16];
-		let pending = match unsafe { ReadFile(server.raw(), Some(&mut buf), None, Some(&mut ov)) } {
-			Ok(()) => true,
-			Err(e) if e.code() == ERROR_IO_PENDING.into() => true,
+		// Synchronous completion still signals the event, so both non-error
+		// outcomes are awaited identically.
+		match unsafe { ReadFile(server.raw(), Some(&mut buf), None, Some(&mut ov)) } {
+			Ok(()) => {}
+			Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
 			Err(e) => panic!("ReadFile: {e}"),
-		};
-		assert!(pending);
+		}
 		match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
 			Ok(OverlappedWait::Completed(n)) => {
 				assert_eq!(&buf[..n as usize], b"ping");

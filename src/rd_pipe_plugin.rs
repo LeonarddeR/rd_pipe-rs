@@ -26,8 +26,7 @@ use windows::Win32::Foundation::{
 	ERROR_PIPE_NOT_CONNECTED, HLOCAL, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
-	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FlushFileBuffers, PIPE_ACCESS_DUPLEX,
-	ReadFile, WriteFile,
+	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::System::Pipes::{
@@ -500,9 +499,6 @@ fn run_pipe_pump(
 		{
 			let mut writer_guard = pipe_writer.lock();
 			writer_guard.take();
-		}
-		unsafe {
-			let _ = FlushFileBuffers(pipe_handle.raw());
 		}
 		if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
 			trace!("Error disconnecting pipe instance: {}", e);
