@@ -584,13 +584,13 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			error!("Received chunk of {} bytes exceeds {}", cbsize, MAX_CHUNK_SIZE);
 			return Err(Error::from(E_UNEXPECTED));
 		}
+		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
+		trace!("Queueing {} received bytes for pipe", chunk.len());
 		let mut writer_lock = self.pipe_writer.lock();
 		let Some(sender) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
 			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
 		};
-		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
-		trace!("Queueing {} received bytes for pipe", chunk.len());
 		match sender.try_send(chunk) {
 			Ok(()) => Ok(()),
 			Err(TrySendError::Full(_)) => {
