@@ -77,7 +77,8 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<Strin
 		trace!("Getting token information size");
 		GetTokenInformation(token, TokenGroups, None, 0, &mut len).unwrap_or_default();
 
-		let mut buffer = vec![0u8; len as usize];
+		// u64-backed buffer keeps the TOKEN_GROUPS cast below properly aligned
+		let mut buffer = vec![0u64; (len as usize).div_ceil(size_of::<u64>())];
 		// Second call to get actual data
 		trace!("Getting token information, expecting size {}", len);
 		GetTokenInformation(
@@ -168,6 +169,21 @@ mod tests {
 		assert!(result.is_ok());
 		let attrs = result.unwrap();
 		assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
+
+		// Clean up
+		unsafe {
+			let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
+		}
+	}
+
+	#[test]
+	fn test_security_attributes_from_sddl_with_dacl_and_sacl() {
+		let sddl = "D:(A;;GRGW;;;S-1-5-5-0-12345)S:(ML;;NRNW;;;ME)";
+		let result = security_attributes_from_sddl(sddl);
+
+		assert!(result.is_ok());
+		let attrs = result.unwrap();
+		assert!(!attrs.lpSecurityDescriptor.is_null());
 
 		// Clean up
 		unsafe {

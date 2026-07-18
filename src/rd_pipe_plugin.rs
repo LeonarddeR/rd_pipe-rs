@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::{ERROR_PIPE_NOT_CONNECTED, HLOCAL};
+use windows::Win32::Foundation::{E_POINTER, ERROR_PIPE_NOT_CONNECTED, HLOCAL};
 use windows::{
 	Win32::{
 		Foundation::E_UNEXPECTED,
@@ -167,6 +167,9 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 			Some(c) => c,
 			None => return Err(Error::from(E_UNEXPECTED)),
 		};
+		if pbaccept.is_null() {
+			return Err(Error::from(E_POINTER));
+		}
 		let pbaccept = unsafe { &mut *pbaccept };
 		*pbaccept = BOOL::from(true);
 		debug!("Creating callback");
@@ -187,6 +190,10 @@ fn channel_write(agile: &AgileReference<IWTSVirtualChannel>, data: &[u8]) -> Res
 
 const MSG_XON: u8 = 0x11;
 const MSG_XOFF: u8 = 0x13;
+
+fn build_pipe_sddl(logon_sid: &str) -> String {
+	format!("D:(A;;GRGW;;;{logon_sid})S:(ML;;NRNW;;;ME)")
+}
 
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
@@ -217,7 +224,6 @@ impl RdPipeChannelCallback {
 		shutdown: CancellationToken,
 	) {
 		ASYNC_RUNTIME.spawn(async move {
-			let mut first_pipe_instance = true;
 			let login_sid = match get_logon_sid() {
 				Ok(s) => s,
 				Err(e) => {
@@ -225,46 +231,45 @@ impl RdPipeChannelCallback {
 					return;
 				}
 			};
-			let sddl = format!("D:(A;;GA;;;{login_sid})", login_sid = login_sid);
+			let sddl = build_pipe_sddl(&login_sid);
 
-			loop {
-				trace!(
-					"Creating pipe server with address {}, first instance {}",
-					pipe_addr, first_pipe_instance
-				);
-				let server = match unsafe {
+			let mut server = loop {
+				trace!("Creating pipe server with address {}", pipe_addr);
+				let create_res = unsafe {
 					let mut attributes = match security_attributes_from_sddl(&sddl) {
 						Ok(s) => s,
 						Err(e) => {
 							error!("Can't create security attributes, {}", e);
-							break;
+							return;
 						}
 					};
 					let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
 
 					ServerOptions::new()
-						.first_pipe_instance(first_pipe_instance)
+						.first_pipe_instance(true)
 						.max_instances(1)
 						.create_with_security_attributes_raw(
 							&pipe_addr,
 							&raw mut attributes as *mut _,
 						)
-				} {
-					Ok(s) => s,
+				};
+				match create_res {
+					Ok(s) => break s,
 					Err(e) => {
 						error!("Error while creating named pipe server: {}", e);
 						tokio::select! {
 							biased;
 							_ = shutdown.cancelled() => {
 								trace!("Shutdown signalled during pipe-server creation retry");
-								break;
+								return;
 							}
 							_ = sleep(Duration::from_millis(100)) => {}
 						}
-						continue;
 					}
-				};
-				first_pipe_instance = false;
+				}
+			};
+			let mut reconnected = false;
+			loop {
 				trace!("Initiate connection to pipe client");
 				let connect_res = tokio::select! {
 					biased;
@@ -284,6 +289,17 @@ impl RdPipeChannelCallback {
 					},
 					Err(e) => {
 						error!("Error connecting to pipe client: {}", e);
+						if let Err(e) = server.disconnect() {
+							trace!("Error resetting pipe instance: {}", e);
+						}
+						tokio::select! {
+							biased;
+							_ = shutdown.cancelled() => {
+								trace!("Shutdown signalled during pipe reconnect retry");
+								break;
+							}
+							_ = sleep(Duration::from_millis(100)) => {}
+						}
 						continue;
 					}
 				}
@@ -293,6 +309,11 @@ impl RdPipeChannelCallback {
 					*writer_guard = Some(server_writer);
 				}
 				trace!("Pipe client connected. Initiating pipe_reader loop");
+				// A reused instance holds one parked read result from the
+				// previous connection (mio consumes it on the first read and
+				// only then schedules a fresh read); discard that single
+				// stale EOF/error instead of treating it as a disconnect.
+				let mut drain_stale = reconnected;
 				'reader: loop {
 					let mut buf = Vec::with_capacity(64 * 1024);
 					let read_res = tokio::select! {
@@ -307,7 +328,12 @@ impl RdPipeChannelCallback {
 						}
 						res = server_reader.read_buf(&mut buf) => res,
 					};
+					let discard_stale = std::mem::take(&mut drain_stale);
 					match read_res {
+						Ok(0) if discard_stale => {
+							trace!("Discarded stale EOF from previous connection");
+							continue;
+						}
 						Ok(0) => {
 							info!("Received 0 bytes, pipe closed by client");
 							match channel_write(&channel_agile, &[MSG_XOFF]) {
@@ -330,6 +356,10 @@ impl RdPipeChannelCallback {
 							warn!("Reading pipe would block: {}", e);
 							continue;
 						}
+						Err(e) if discard_stale => {
+							trace!("Discarded stale read error from previous connection: {}", e);
+							continue;
+						}
 						Err(e) => {
 							error!("Error reading from pipe client: {}", e);
 							match channel_write(&channel_agile, &[MSG_XOFF]) {
@@ -340,12 +370,20 @@ impl RdPipeChannelCallback {
 						}
 					}
 				}
-				trace!("End of pipe_reader loop, releasing writer");
-				{
+				trace!("End of pipe_reader loop, reclaiming pipe instance");
+				let server_writer = {
 					let mut writer_guard = writer.lock();
-					*writer_guard = None;
+					writer_guard.take()
+				};
+				let Some(server_writer) = server_writer else {
+					trace!("Pipe writer already released during shutdown");
+					break;
+				};
+				server = server_reader.unsplit(server_writer);
+				if let Err(e) = server.disconnect() {
+					trace!("Error disconnecting pipe instance: {}", e);
 				}
-				trace!("Writer released");
+				reconnected = true;
 			}
 		});
 	}
@@ -364,6 +402,12 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 	#[instrument]
 	fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
 		debug!("Data received, buffer has size {}", cbsize);
+		if cbsize == 0 {
+			return Ok(());
+		}
+		if pbuffer.is_null() {
+			return Err(Error::from(E_POINTER));
+		}
 		let mut writer_lock = self.pipe_writer.lock();
 		writer_lock.as_mut().map_or_else(
 			|| {
@@ -372,7 +416,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			},
 			|writer| {
 				let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-				trace!("Writing received data to pipe: {:?}", slice);
+				trace!("Writing {} received bytes to pipe", slice.len());
 				if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
 					error!("Error writing received data to pipe: {}", e);
 					return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
@@ -423,6 +467,19 @@ mod tests {
 		assert!(addr.starts_with(PIPE_NAME_PREFIX));
 		assert!(addr.contains(channel_name));
 		assert!(addr.contains(&channel_addr.to_string()));
+	}
+
+	#[test]
+	fn test_build_pipe_sddl_grants_read_write_only() {
+		let sddl = build_pipe_sddl("S-1-5-5-0-12345");
+		assert_eq!(sddl, "D:(A;;GRGW;;;S-1-5-5-0-12345)S:(ML;;NRNW;;;ME)");
+		assert!(!sddl.contains("GA"));
+	}
+
+	#[test]
+	fn test_build_pipe_sddl_has_medium_integrity_label() {
+		let sddl = build_pipe_sddl("S-1-5-5-0-12345");
+		assert!(sddl.contains("S:(ML;;NRNW;;;ME)"));
 	}
 
 	#[test]
