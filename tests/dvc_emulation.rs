@@ -462,6 +462,18 @@ fn pipe_client_can_reconnect_after_disconnect() {
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 		}
+
+		// Channel -> pipe still pumps after the reconnect.
+		use tokio::io::AsyncReadExt;
+		unsafe {
+			chan_cb.OnDataReceived(b"back").expect("OnDataReceived after reconnect");
+		}
+		let mut got = [0u8; 4];
+		tokio::time::timeout(std::time::Duration::from_secs(5), client2.read_exact(&mut got))
+			.await
+			.expect("read timeout after reconnect")
+			.expect("read after reconnect");
+		assert_eq!(&got, b"back");
 	});
 
 	unsafe {

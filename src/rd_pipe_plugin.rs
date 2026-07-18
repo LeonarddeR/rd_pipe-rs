@@ -268,6 +268,7 @@ impl RdPipeChannelCallback {
 					}
 				}
 			};
+			let mut reconnected = false;
 			loop {
 				trace!("Initiate connection to pipe client");
 				let connect_res = tokio::select! {
@@ -308,6 +309,11 @@ impl RdPipeChannelCallback {
 					*writer_guard = Some(server_writer);
 				}
 				trace!("Pipe client connected. Initiating pipe_reader loop");
+				// A reused instance holds one parked read result from the
+				// previous connection (mio consumes it on the first read and
+				// only then schedules a fresh read); discard that single
+				// stale EOF/error instead of treating it as a disconnect.
+				let mut drain_stale = reconnected;
 				'reader: loop {
 					let mut buf = Vec::with_capacity(64 * 1024);
 					let read_res = tokio::select! {
@@ -322,7 +328,12 @@ impl RdPipeChannelCallback {
 						}
 						res = server_reader.read_buf(&mut buf) => res,
 					};
+					let discard_stale = std::mem::take(&mut drain_stale);
 					match read_res {
+						Ok(0) if discard_stale => {
+							trace!("Discarded stale EOF from previous connection");
+							continue;
+						}
 						Ok(0) => {
 							info!("Received 0 bytes, pipe closed by client");
 							match channel_write(&channel_agile, &[MSG_XOFF]) {
@@ -343,6 +354,10 @@ impl RdPipeChannelCallback {
 						}
 						Err(e) if e.kind() == WouldBlock => {
 							warn!("Reading pipe would block: {}", e);
+							continue;
+						}
+						Err(e) if discard_stale => {
+							trace!("Discarded stale read error from previous connection: {}", e);
 							continue;
 						}
 						Err(e) => {
@@ -368,6 +383,7 @@ impl RdPipeChannelCallback {
 				if let Err(e) = server.disconnect() {
 					trace!("Error disconnecting pipe instance: {}", e);
 				}
+				reconnected = true;
 			}
 		});
 	}
