@@ -58,28 +58,29 @@ Log level read from `HKCU\...\CLSID\{...}\LogLevel` (fallback HKLM), values 1–
 
 ## Architecture
 
-Entry points live in `src/lib.rs`: `DllMain` (init tracing + async runtime), `DllGetClassObject` (hand out `ClassFactory`), `DllInstall` (registry setup).
+Entry points live in `src/lib.rs`: `DllMain` (init tracing), `DllGetClassObject` (hand out `ClassFactory`), `DllInstall` (registry setup). No async runtime — all pipe IO is overlapped Win32 on dedicated `std::thread`s.
 
 Call flow inside an RDS client:
 
 1. RDS loads DLL, calls `DllGetClassObject` for `CLSID_RD_PIPE_PLUGIN`.
 2. `class_factory::ClassFactory::CreateInstance` returns an `IWTSPlugin` (`RdPipePlugin`).
 3. On `Initialize`, `RdPipePlugin` reads channel names from registry (`ChannelNames` multi-string) and calls `CreateListener` per channel, attaching an `IWTSListenerCallback`.
-4. When the server opens a channel, `OnNewChannelConnection` builds an `IWTSVirtualChannelCallback` and spawns — on the global Tokio runtime (`ASYNC_RUNTIME` in `lib.rs`) — a named-pipe server at `\\.\pipe\RdPipe\<session>\<channel>` (see `rd_pipe_plugin.rs`).
-5. Pipe ↔ channel pump runs via `tokio::io::split`; writes to channel use the COM `IWTSVirtualChannel`, reads from channel delivered via `OnDataReceived` forwarded to pipe write half (held behind `parking_lot::Mutex<Arc<...>>`).
+4. When the server opens a channel, `OnNewChannelConnection` creates the single named-pipe instance (`CreateNamedPipeW`, `FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE`, `max_instances 1` — the name stays claimed for the channel lifetime, incl. across client reconnects) and spawns the **pump thread** (`run_pipe_pump` in `rd_pipe_plugin.rs`).
+5. Pump thread: overlapped `ConnectNamedPipe` → XON → per-connection **writer thread** fed by a bounded `std::sync::mpsc::sync_channel` → overlapped `ReadFile` loop forwarding to the COM `IWTSVirtualChannel`. `OnDataReceived` only does `try_send` into the queue (never blocks the RDS thread); a full queue means a stalled client, which gets disconnected. `OnClose` takes the sender and signals a manual-reset shutdown event that wakes every pending overlapped wait (`wait_overlapped` in `overlapped.rs`).
 6. XON/XOFF byte constants gate flow control.
 
 Named-pipe ACL built from caller's **logon SID** via SDDL in `security_descriptor.rs` (`get_logon_sid` + `security_attributes_from_sddl`), so only the interactive user can connect.
 
 Module map:
 
-- `lib.rs` — DLL exports, runtime, logging, install dispatcher.
+- `lib.rs` — DLL exports, logging, install dispatcher.
 - `class_factory.rs` — `IClassFactory` impl producing `IWTSPlugin`.
-- `rd_pipe_plugin.rs` — plugin, listener callback, channel callback, named-pipe pump. **Core of the crate.**
+- `overlapped.rs` — `OwnedHandle` RAII wrapper, event creation, `wait_overlapped` (op event + shutdown event pair, `CancelIoEx` on shutdown).
+- `rd_pipe_plugin.rs` — plugin, listener callback, channel callback, pump/writer threads. **Core of the crate.**
 - `registry.rs` — CLSID constant, registry path constants, add/delete helpers for InprocServer, MSTS AddIns, Citrix modules.
 - `security_descriptor.rs` — logon SID lookup and SDDL → `SECURITY_ATTRIBUTES` conversion (caller must `LocalFree` the descriptor).
 
-Concurrency: single global multi-thread Tokio runtime (`LazyLock<Runtime>`). COM interfaces crossed between threads are wrapped in `AgileReference`. Shared pipe write-halves guarded by `parking_lot::Mutex`.
+Concurrency: two `std` threads per connected channel (pump + writer), no runtime. COM interfaces crossed between threads are wrapped in `AgileReference`. The writer queue sender sits behind a `parking_lot::Mutex<Option<SyncSender>>`; taking it is the synchronous "pipe gone" signal for `OnDataReceived`.
 
 ## Testing Notes
 

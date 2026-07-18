@@ -345,7 +345,6 @@ pub fn create_plugin(dll: &DllHandle) -> IWTSPlugin {
 }
 
 use std::time::{Duration, Instant};
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 
 /// Build the pipe path used by the plugin for a given channel name and
 /// channel COM interface address (matches `PIPE_NAME_PREFIX` in rd_pipe_plugin.rs).
@@ -354,25 +353,51 @@ pub fn pipe_address(channel_name: &str, channel_addr: usize) -> String {
 }
 
 /// Poll `pipe_address(name, addr)` every 25 ms until the pipe is connectable
-/// or `deadline` elapses. Returns the connected client.
-pub async fn connect_pipe_client(
+/// or `deadline` elapses. Returns the connected client; a byte-mode named
+/// pipe client is a plain `File` opened for read+write.
+pub fn connect_pipe_client(
 	channel_name: &str,
 	channel_addr: usize,
 	deadline: Duration,
-) -> NamedPipeClient {
+) -> std::fs::File {
 	let addr = pipe_address(channel_name, channel_addr);
 	let start = Instant::now();
 	loop {
-		match ClientOptions::new().open(&addr) {
+		match std::fs::OpenOptions::new().read(true).write(true).open(&addr) {
 			Ok(client) => return client,
 			Err(_) if start.elapsed() < deadline => {
-				tokio::time::sleep(Duration::from_millis(25)).await;
+				std::thread::sleep(Duration::from_millis(25));
 			}
 			Err(e) => panic!(
 				"pipe {addr} never accepted within {deadline:?}: {e}\n\n--- RdPipe.log tail ---\n{}",
 				read_rdpipe_log_tail()
 			),
 		}
+	}
+}
+
+/// Read exactly `len` bytes from a clone of `file` on a helper thread,
+/// failing if `timeout` elapses first. The helper thread may outlive a
+/// timeout while parked in the blocking read; fine for tests.
+pub fn read_exact_with_timeout(
+	file: &std::fs::File,
+	len: usize,
+	timeout: Duration,
+) -> std::io::Result<Vec<u8>> {
+	use std::io::Read;
+	let mut clone = file.try_clone()?;
+	let (tx, rx) = std::sync::mpsc::channel();
+	std::thread::spawn(move || {
+		let mut buf = vec![0u8; len];
+		let res = clone.read_exact(&mut buf).map(|_| buf);
+		let _ = tx.send(res);
+	});
+	match rx.recv_timeout(timeout) {
+		Ok(res) => res,
+		Err(_) => Err(std::io::Error::new(
+			std::io::ErrorKind::TimedOut,
+			format!("read of {len} bytes timed out after {timeout:?}"),
+		)),
 	}
 }
 
@@ -388,15 +413,6 @@ pub fn read_rdpipe_log_tail() -> String {
 		}
 		Err(e) => format!("(could not read {}: {e})", path.display()),
 	}
-}
-
-/// Build a single-thread Tokio runtime, run `f` to completion, return the result.
-pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
-	tokio::runtime::Builder::new_current_thread()
-		.enable_all()
-		.build()
-		.expect("build tokio runtime")
-		.block_on(f)
 }
 
 use windows::Win32::System::RemoteDesktop::IWTSVirtualChannelCallback;

@@ -30,8 +30,11 @@ The project now includes comprehensive unit tests for the following modules:
 ### 4. Library Entry Points (`src/lib.rs`)
 - **Command constant tests**: Verify DllInstall command characters are distinct
 - **CLSID consistency tests**: Ensure CLSID matches across modules
-- **Runtime initialization tests**: Test async runtime lazy initialization
 - **Command parsing tests**: Validate command string parsing logic
+
+### 4b. Overlapped IO Module (`src/overlapped.rs`)
+- **Completion path**: overlapped `ReadFile` against a real pipe pair completes via `wait_overlapped`
+- **Shutdown path**: signalling the shutdown event cancels a pending read and returns `Shutdown`
 
 ### 5. Class Factory Module (`src/class_factory.rs`)
 - **Construction tests**: Verify ClassFactory can be created and converted to IClassFactory
@@ -51,8 +54,9 @@ binaries:
 - **`tests/dvc_emulation.rs`** — drives the full plugin lifecycle:
   factory creation, `Initialize` against a fake `IWTSVirtualChannelManager`,
   `OnNewChannelConnection`, named-pipe data round-trips in both directions,
-  XON/XOFF flow control, `OnClose` cleanup, and multi-channel listener
-  creation.
+  XON/XOFF flow control, client reconnect against the still-claimed pipe
+  instance, stalled-client disconnect at the write-queue cap, oversized
+  chunk rejection, `OnClose` cleanup, and multi-channel listener creation.
 
 A shared helper module `tests/common/mod.rs` provides:
 
@@ -63,7 +67,8 @@ A shared helper module `tests/common/mod.rs` provides:
 - `FakeChannelMgr`, `FakeListener`, `FakeVirtualChannel` — minimal
   `windows::core::implement` stubs for the host-side COM interfaces,
   with `Mutex`-guarded event logs for assertions.
-- `connect_pipe_client`, `block_on`, `trigger_new_channel`,
+- `connect_pipe_client` (a byte-mode pipe client is a plain
+  `std::fs::File`), `read_exact_with_timeout`, `trigger_new_channel`,
   `channel_addr`, `pipe_address` — pipe and lifecycle plumbing.
 
 Each `dvc_emulation` test is annotated `#[serial_test::serial]` because
@@ -251,16 +256,17 @@ Tests run automatically on:
 ## Test Metrics
 
 Current test coverage by module:
-- `registry.rs`: 6 unit tests (constants, GUID, path formatting)
-- `security_descriptor.rs`: 6 unit tests (SDDL, SID, memory management)
-- `rd_pipe_plugin.rs`: 8 unit tests (constants, construction, naming)
-- `lib.rs`: 6 unit tests (constants, initialization, parsing)
-- `class_factory.rs`: 6 unit tests (construction, interfaces, Debug impl)
+- `registry.rs`: unit tests (constants, GUID, path formatting)
+- `security_descriptor.rs`: unit tests (SDDL, SID, memory management)
+- `overlapped.rs`: unit tests (overlapped completion, shutdown cancellation)
+- `rd_pipe_plugin.rs`: unit tests (constants, construction, naming, shutdown signal)
+- `lib.rs`: unit tests (constants, parsing)
+- `class_factory.rs`: unit tests (construction, interfaces, Debug impl)
 
-**Total**: 32 unit tests + 14 integration tests covering core functionality and end-to-end COM/pipe lifecycle
+**Total**: 30 unit tests + 18 integration tests covering core functionality and end-to-end COM/pipe lifecycle
 
 - `tests/dll_smoke.rs`: 5 integration tests (DLL load, exports, bad CLSID/IID, FakeVirtualChannel smoke, HkcuOverride smoke)
-- `tests/dvc_emulation.rs`: 9 integration tests (full plugin lifecycle scenarios)
+- `tests/dvc_emulation.rs`: 13 integration tests (full plugin lifecycle scenarios)
 
 ## Future Improvements
 

@@ -1,6 +1,6 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
 // Dynamic Virtual Channel Plugin structs
-// Copyright (C) 2022-2025 Leonard de Ruijter <alderuijter@gmail.com>
+// Copyright (C) 2022-2026 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
@@ -16,15 +16,25 @@ use core::slice;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fmt;
-use std::{io::ErrorKind::WouldBlock, sync::Arc};
-use tokio::{
-	io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split},
-	net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-	time::{Duration, sleep},
-};
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::{E_POINTER, ERROR_PIPE_NOT_CONNECTED, HLOCAL};
+use windows::Win32::Foundation::{
+	E_POINTER, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
+	ERROR_PIPE_NOT_CONNECTED, HLOCAL, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows::Win32::Storage::FileSystem::{
+	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FlushFileBuffers, PIPE_ACCESS_DUPLEX,
+	ReadFile, WriteFile,
+};
+use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::System::Pipes::{
+	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+	PIPE_WAIT,
+};
+use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::{
 	Win32::{
 		Foundation::E_UNEXPECTED,
@@ -34,15 +44,13 @@ use windows::{
 			IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
 		},
 	},
-	core::{AgileReference, BSTR, Error, Interface, PCSTR, Result, implement},
+	core::{AgileReference, BSTR, Error, HSTRING, Interface, PCSTR, Result, implement},
 };
 use windows_core::{BOOL, OutRef, Owned};
 use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
-use crate::{
-	ASYNC_RUNTIME,
-	security_descriptor::{get_logon_sid, security_attributes_from_sddl},
-};
+use crate::overlapped::{OverlappedWait, OwnedHandle, create_event, signal_event, wait_overlapped};
+use crate::security_descriptor::{get_logon_sid, security_attributes_from_sddl};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
 const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
@@ -182,6 +190,13 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 }
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
+const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
+/// Upper bound for a single `OnDataReceived` chunk; RDS fragments DVC data
+/// far below this.
+const MAX_CHUNK_SIZE: usize = 64 * 1024;
+/// Chunks queued between the RDS callback thread and the pipe writer thread
+/// before the client is considered stalled.
+const WRITE_QUEUE_CAP: usize = 512;
 
 fn channel_write(agile: &AgileReference<IWTSVirtualChannel>, data: &[u8]) -> Result<()> {
 	let channel = agile.resolve()?;
@@ -195,11 +210,117 @@ fn build_pipe_sddl(logon_sid: &str) -> String {
 	format!("D:(A;;GRGW;;;{logon_sid})S:(ML;;NRNW;;;ME)")
 }
 
+/// Shutdown signal shared by the COM callback and the pipe threads: a flag
+/// for loop conditions plus a manual-reset event that wakes pending
+/// overlapped waits.
+#[derive(Debug)]
+struct Shutdown {
+	flag: AtomicBool,
+	event: OwnedHandle,
+}
+
+impl Shutdown {
+	fn new() -> Result<Self> {
+		Ok(Self { flag: AtomicBool::new(false), event: create_event(true)? })
+	}
+
+	fn signal(&self) {
+		self.flag.store(true, Ordering::Release);
+		if let Err(e) = signal_event(&self.event) {
+			error!("Failed to signal shutdown event: {}", e);
+		}
+	}
+
+	fn is_signalled(&self) -> bool {
+		self.flag.load(Ordering::Acquire)
+	}
+
+	/// Waits up to `ms` for the shutdown event; true if it fired.
+	fn wait(&self, ms: u32) -> bool {
+		match unsafe { WaitForSingleObject(self.event.raw(), ms) } {
+			WAIT_OBJECT_0 => true,
+			WAIT_TIMEOUT => false,
+			_ => {
+				error!("Wait on shutdown event failed: {}", Error::from_thread());
+				true
+			}
+		}
+	}
+}
+
+/// Result of a single overlapped pipe operation.
+enum PipeIo {
+	Done(u32),
+	Disconnected(Error),
+	Shutdown,
+	Failed(Error),
+}
+
+fn classify_error(e: Error) -> PipeIo {
+	if e.code() == ERROR_BROKEN_PIPE.into()
+		|| e.code() == ERROR_PIPE_NOT_CONNECTED.into()
+		|| e.code() == ERROR_NO_DATA.into()
+	{
+		PipeIo::Disconnected(e)
+	} else {
+		PipeIo::Failed(e)
+	}
+}
+
+/// Runs one overlapped op to completion: `start` issues the op against
+/// `handle` with the given OVERLAPPED; the completion (also for
+/// synchronously finished ops, which still signal the event) is awaited
+/// against the shutdown event.
+fn run_overlapped<F>(
+	handle: &OwnedHandle,
+	shutdown: &Shutdown,
+	op_event: &OwnedHandle,
+	start: F,
+) -> PipeIo
+where
+	F: FnOnce(&mut OVERLAPPED) -> Result<()>,
+{
+	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
+	match start(&mut ov) {
+		Ok(()) => {}
+		Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
+		Err(e) => return classify_error(e),
+	}
+	match unsafe { wait_overlapped(handle.raw(), &mut ov, &shutdown.event) } {
+		Ok(OverlappedWait::Completed(n)) => PipeIo::Done(n),
+		Ok(OverlappedWait::Shutdown) => PipeIo::Shutdown,
+		Err(e) => classify_error(e),
+	}
+}
+
+/// Waits for a pipe client on the instance. `ERROR_PIPE_CONNECTED` means the
+/// client beat us to it and never pends the OVERLAPPED, so it is completed
+/// success here rather than via `wait_overlapped`.
+fn connect_pipe(handle: &OwnedHandle, shutdown: &Shutdown, op_event: &OwnedHandle) -> PipeIo {
+	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
+	match unsafe { ConnectNamedPipe(handle.raw(), Some(&mut ov)) } {
+		Ok(()) => PipeIo::Done(0),
+		Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => {
+			trace!("Pipe client connected before ConnectNamedPipe");
+			PipeIo::Done(0)
+		}
+		Err(e) if e.code() == ERROR_IO_PENDING.into() => {
+			match unsafe { wait_overlapped(handle.raw(), &mut ov, &shutdown.event) } {
+				Ok(OverlappedWait::Completed(n)) => PipeIo::Done(n),
+				Ok(OverlappedWait::Shutdown) => PipeIo::Shutdown,
+				Err(e) => classify_error(e),
+			}
+		}
+		Err(e) => classify_error(e),
+	}
+}
+
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-	pipe_writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-	shutdown: CancellationToken,
+	pipe_writer: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
+	pipe_handle: Arc<OwnedHandle>,
+	shutdown: Arc<Shutdown>,
 }
 
 impl RdPipeChannelCallback {
@@ -207,196 +328,251 @@ impl RdPipeChannelCallback {
 	pub fn new(channel: &IWTSVirtualChannel, channel_name: &str) -> Result<Self> {
 		let addr = format!("{}_{}_{}", PIPE_NAME_PREFIX, channel_name, channel.as_raw() as usize);
 		let channel_agile = AgileReference::new(channel)?;
-		let pipe_writer = Arc::new(Mutex::new(None));
-		let shutdown = CancellationToken::new();
 		debug!("Constructing the callback");
 
-		Self::process_pipe(pipe_writer.clone(), channel_agile, addr, shutdown.clone());
+		let login_sid = get_logon_sid().map_err(|e| {
+			error!("Can't get login sid, {}", e);
+			e
+		})?;
+		let sddl = build_pipe_sddl(&login_sid);
+		let pipe_handle = Arc::new(create_pipe_instance(&addr, &sddl)?);
 
-		Ok(Self { pipe_writer, shutdown })
+		let pipe_writer = Arc::new(Mutex::new(None));
+		let shutdown = Arc::new(Shutdown::new()?);
+
+		{
+			let pipe_handle = pipe_handle.clone();
+			let pipe_writer = pipe_writer.clone();
+			let shutdown = shutdown.clone();
+			let addr = addr.clone();
+			thread::Builder::new()
+				.name(format!("rd_pipe pump {addr}"))
+				.spawn(move || {
+					run_pipe_pump(pipe_handle, pipe_writer, channel_agile, shutdown, addr)
+				})
+				.map_err(|e| {
+					error!("Failed to spawn pipe pump thread: {}", e);
+					Error::from(E_UNEXPECTED)
+				})?;
+		}
+
+		Ok(Self { pipe_writer, pipe_handle, shutdown })
 	}
+}
 
-	#[instrument]
-	pub fn process_pipe(
-		writer: Arc<Mutex<Option<WriteHalf<NamedPipeServer>>>>,
-		channel_agile: AgileReference<IWTSVirtualChannel>,
-		pipe_addr: String,
-		shutdown: CancellationToken,
-	) {
-		ASYNC_RUNTIME.spawn(async move {
-			let login_sid = match get_logon_sid() {
-				Ok(s) => s,
-				Err(e) => {
-					error!("Can't get login sid,  {}", e);
-					return;
+/// Creates the single named-pipe instance for a channel. The handle stays
+/// open for the channel's lifetime so the pipe name remains claimed.
+fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
+	trace!("Creating pipe server with address {}", addr);
+	let handle = unsafe {
+		let attributes = security_attributes_from_sddl(sddl).map_err(|e| {
+			error!("Can't create security attributes, {}", e);
+			e
+		})?;
+		let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
+		CreateNamedPipeW(
+			&HSTRING::from(addr),
+			FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_ACCESS_DUPLEX,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+			1,
+			PIPE_BUFFER_SIZE,
+			PIPE_BUFFER_SIZE,
+			0,
+			Some(&attributes),
+		)
+	};
+	if handle.is_invalid() {
+		let e = Error::from_thread();
+		error!("Error while creating named pipe server: {}", e);
+		return Err(e);
+	}
+	Ok(unsafe { OwnedHandle::new(handle) })
+}
+
+/// Accept/read loop for one channel. Runs on a dedicated thread; keeps the
+/// single pipe instance claimed across client reconnects.
+#[instrument(skip(pipe_handle, pipe_writer, channel_agile, shutdown))]
+fn run_pipe_pump(
+	pipe_handle: Arc<OwnedHandle>,
+	pipe_writer: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
+	channel_agile: AgileReference<IWTSVirtualChannel>,
+	shutdown: Arc<Shutdown>,
+	addr: String,
+) {
+	let op_event = match create_event(false) {
+		Ok(e) => e,
+		Err(e) => {
+			error!("Can't create pump op event: {}", e);
+			return;
+		}
+	};
+	let mut buf = vec![0u8; PIPE_BUFFER_SIZE as usize];
+	while !shutdown.is_signalled() {
+		trace!("Initiate connection to pipe client");
+		let connect_res = connect_pipe(&pipe_handle, &shutdown, &op_event);
+		match connect_res {
+			PipeIo::Done(_) => {}
+			PipeIo::Shutdown => {
+				trace!("Shutdown signalled while awaiting pipe client connection");
+				break;
+			}
+			PipeIo::Disconnected(e) | PipeIo::Failed(e) => {
+				error!("Error connecting to pipe client: {}", e);
+				if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
+					trace!("Error resetting pipe instance: {}", e);
 				}
-			};
-			let sddl = build_pipe_sddl(&login_sid);
-
-			let mut server = loop {
-				trace!("Creating pipe server with address {}", pipe_addr);
-				let create_res = unsafe {
-					let mut attributes = match security_attributes_from_sddl(&sddl) {
-						Ok(s) => s,
-						Err(e) => {
-							error!("Can't create security attributes, {}", e);
-							return;
-						}
-					};
-					let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
-
-					ServerOptions::new()
-						.first_pipe_instance(true)
-						.max_instances(1)
-						.create_with_security_attributes_raw(
-							&pipe_addr,
-							&raw mut attributes as *mut _,
-						)
-				};
-				match create_res {
-					Ok(s) => break s,
-					Err(e) => {
-						error!("Error while creating named pipe server: {}", e);
-						tokio::select! {
-							biased;
-							_ = shutdown.cancelled() => {
-								trace!("Shutdown signalled during pipe-server creation retry");
-								return;
-							}
-							_ = sleep(Duration::from_millis(100)) => {}
-						}
-					}
+				if shutdown.wait(100) {
+					trace!("Shutdown signalled during pipe reconnect retry");
+					break;
 				}
-			};
-			let mut reconnected = false;
-			loop {
-				trace!("Initiate connection to pipe client");
-				let connect_res = tokio::select! {
-					biased;
-					_ = shutdown.cancelled() => {
-						trace!("Shutdown signalled while awaiting pipe client connection");
-						break;
-					}
-					res = server.connect() => res,
-				};
-				match connect_res {
-					Ok(_) => match channel_write(&channel_agile, &[MSG_XON]) {
-						Ok(()) => trace!("Wrote XON to channel"),
+				continue;
+			}
+		}
+		trace!("Pipe client connected");
+
+		let (sender, receiver) = sync_channel(WRITE_QUEUE_CAP);
+		{
+			let mut writer_guard = pipe_writer.lock();
+			*writer_guard = Some(sender);
+		}
+		let writer_thread = {
+			let pipe_handle = pipe_handle.clone();
+			let shutdown = shutdown.clone();
+			thread::Builder::new()
+				.name(format!("rd_pipe writer {addr}"))
+				.spawn(move || run_pipe_writer(pipe_handle, receiver, shutdown))
+		};
+		let writer_thread = match writer_thread {
+			Ok(t) => t,
+			Err(e) => {
+				error!("Failed to spawn pipe writer thread: {}", e);
+				break;
+			}
+		};
+
+		match channel_write(&channel_agile, &[MSG_XON]) {
+			Ok(()) => trace!("Wrote XON to channel"),
+			Err(e) => {
+				error!("Error writing XON to channel: {}", e);
+				shutdown.signal();
+			}
+		}
+
+		trace!("Initiating pipe_reader loop");
+		let mut exiting = shutdown.is_signalled();
+		while !exiting {
+			let read_res = run_overlapped(&pipe_handle, &shutdown, &op_event, |ov| unsafe {
+				ReadFile(pipe_handle.raw(), Some(buf.as_mut_slice()), None, Some(ov as *mut _))
+			});
+			match read_res {
+				PipeIo::Done(0) => {
+					trace!("Zero-byte read from pipe");
+				}
+				PipeIo::Done(n) => {
+					trace!("read {} bytes", n);
+					match channel_write(&channel_agile, &buf[..n as usize]) {
+						Ok(()) => trace!("Wrote {} bytes to channel", n),
 						Err(e) => {
-							error!("Error writing XON to channel: {}", e);
+							error!("Error during write to channel: {}", e);
 							break;
 						}
-					},
-					Err(e) => {
-						error!("Error connecting to pipe client: {}", e);
-						if let Err(e) = server.disconnect() {
-							trace!("Error resetting pipe instance: {}", e);
-						}
-						tokio::select! {
-							biased;
-							_ = shutdown.cancelled() => {
-								trace!("Shutdown signalled during pipe reconnect retry");
-								break;
-							}
-							_ = sleep(Duration::from_millis(100)) => {}
-						}
-						continue;
 					}
 				}
-				let (mut server_reader, server_writer) = split(server);
-				{
-					let mut writer_guard = writer.lock();
-					*writer_guard = Some(server_writer);
+				PipeIo::Shutdown => {
+					trace!("Shutdown signalled inside reader loop");
+					exiting = true;
 				}
-				trace!("Pipe client connected. Initiating pipe_reader loop");
-				// A reused instance holds one parked read result from the
-				// previous connection (mio consumes it on the first read and
-				// only then schedules a fresh read); discard that single
-				// stale EOF/error instead of treating it as a disconnect.
-				let mut drain_stale = reconnected;
-				'reader: loop {
-					let mut buf = Vec::with_capacity(64 * 1024);
-					let read_res = tokio::select! {
-						biased;
-						_ = shutdown.cancelled() => {
-							trace!("Shutdown signalled inside reader loop");
-							match channel_write(&channel_agile, &[MSG_XOFF]) {
-								Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
-								Err(e) => error!("Error writing XOFF on shutdown: {}", e),
-							}
-							break 'reader;
-						}
-						res = server_reader.read_buf(&mut buf) => res,
-					};
-					let discard_stale = std::mem::take(&mut drain_stale);
-					match read_res {
-						Ok(0) if discard_stale => {
-							trace!("Discarded stale EOF from previous connection");
-							continue;
-						}
-						Ok(0) => {
-							info!("Received 0 bytes, pipe closed by client");
-							match channel_write(&channel_agile, &[MSG_XOFF]) {
-								Ok(()) => trace!("Wrote XOFF to channel"),
-								Err(e) => error!("Error writing XOFF to channel: {}", e),
-							}
-							break 'reader;
-						}
-						Ok(n) => {
-							trace!("read {} bytes", n);
-							match channel_write(&channel_agile, &buf) {
-								Ok(()) => trace!("Wrote {} bytes to channel", n),
-								Err(e) => {
-									error!("Error during write to channel: {}", e);
-									break 'reader;
-								}
-							}
-						}
-						Err(e) if e.kind() == WouldBlock => {
-							warn!("Reading pipe would block: {}", e);
-							continue;
-						}
-						Err(e) if discard_stale => {
-							trace!("Discarded stale read error from previous connection: {}", e);
-							continue;
-						}
-						Err(e) => {
-							error!("Error reading from pipe client: {}", e);
-							match channel_write(&channel_agile, &[MSG_XOFF]) {
-								Ok(()) => trace!("Wrote XOFF to channel"),
-								Err(e) => error!("Error writing XOFF to channel: {}", e),
-							}
-							break 'reader;
-						}
-					}
-				}
-				trace!("End of pipe_reader loop, reclaiming pipe instance");
-				let server_writer = {
-					let mut writer_guard = writer.lock();
-					writer_guard.take()
-				};
-				let Some(server_writer) = server_writer else {
-					trace!("Pipe writer already released during shutdown");
+				PipeIo::Disconnected(e) => {
+					info!("Pipe closed by client: {}", e);
 					break;
-				};
-				server = server_reader.unsplit(server_writer);
-				if let Err(e) = server.disconnect() {
-					trace!("Error disconnecting pipe instance: {}", e);
 				}
-				reconnected = true;
+				PipeIo::Failed(e) => {
+					error!("Error reading from pipe client: {}", e);
+					break;
+				}
 			}
-		});
+		}
+		trace!("End of pipe_reader loop, reclaiming pipe instance");
+		match channel_write(&channel_agile, &[MSG_XOFF]) {
+			Ok(()) => trace!("Wrote XOFF to channel"),
+			Err(e) => error!("Error writing XOFF to channel: {}", e),
+		}
+		{
+			let mut writer_guard = pipe_writer.lock();
+			writer_guard.take();
+		}
+		unsafe {
+			let _ = FlushFileBuffers(pipe_handle.raw());
+		}
+		if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
+			trace!("Error disconnecting pipe instance: {}", e);
+		}
+		if let Err(e) = writer_thread.join() {
+			error!("Pipe writer thread panicked: {:?}", e);
+			break;
+		}
 	}
+	trace!("Pipe pump for {} exiting", addr);
+}
+
+/// Drains queued channel data into the pipe. Exits when the sender is
+/// dropped (queue drained first) or on shutdown/write failure.
+fn run_pipe_writer(
+	pipe_handle: Arc<OwnedHandle>,
+	receiver: Receiver<Vec<u8>>,
+	shutdown: Arc<Shutdown>,
+) {
+	let op_event = match create_event(false) {
+		Ok(e) => e,
+		Err(e) => {
+			error!("Can't create writer op event: {}", e);
+			return;
+		}
+	};
+	while let Ok(chunk) = receiver.recv() {
+		if shutdown.is_signalled() {
+			break;
+		}
+		let write_res = run_overlapped(&pipe_handle, &shutdown, &op_event, |ov| unsafe {
+			WriteFile(pipe_handle.raw(), Some(chunk.as_slice()), None, Some(ov as *mut _))
+		});
+		match write_res {
+			PipeIo::Done(n) => {
+				trace!("Wrote {} bytes to pipe", n);
+				if (n as usize) != chunk.len() {
+					error!("Partial pipe write: {} of {} bytes", n, chunk.len());
+					break;
+				}
+			}
+			PipeIo::Shutdown => {
+				trace!("Shutdown signalled inside writer loop");
+				break;
+			}
+			PipeIo::Disconnected(e) => {
+				info!("Pipe write target gone: {}", e);
+				break;
+			}
+			PipeIo::Failed(e) => {
+				error!("Error writing to pipe: {}", e);
+				if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
+					trace!("Error disconnecting pipe instance after write failure: {}", e);
+				}
+				break;
+			}
+		}
+	}
+	trace!("Pipe writer exiting");
 }
 
 impl fmt::Debug for RdPipeChannelCallback_Impl {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.debug_struct("RdPipeChannelCallback_Impl")
-			.field("pipe_writer", &self.pipe_writer)
-			.field("shutdown_cancelled", &self.shutdown.is_cancelled())
+			.field("has_pipe_writer", &self.pipe_writer.lock().is_some())
+			.field("shutdown_signalled", &self.shutdown.is_signalled())
 			.finish()
 	}
 }
+
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 	#[allow(clippy::not_unsafe_ptr_arg_deref)]
 	#[instrument]
@@ -408,33 +584,40 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		if pbuffer.is_null() {
 			return Err(Error::from(E_POINTER));
 		}
+		if cbsize as usize > MAX_CHUNK_SIZE {
+			error!("Received chunk of {} bytes exceeds {}", cbsize, MAX_CHUNK_SIZE);
+			return Err(Error::from(E_UNEXPECTED));
+		}
 		let mut writer_lock = self.pipe_writer.lock();
-		writer_lock.as_mut().map_or_else(
-			|| {
-				debug!("Data received without an open named pipe");
-				Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
-			},
-			|writer| {
-				let slice = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) };
-				trace!("Writing {} received bytes to pipe", slice.len());
-				if let Err(e) = ASYNC_RUNTIME.block_on(writer.write_all(slice)) {
-					error!("Error writing received data to pipe: {}", e);
-					return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+		let Some(sender) = writer_lock.as_ref() else {
+			debug!("Data received without an open named pipe");
+			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+		};
+		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
+		trace!("Queueing {} received bytes for pipe", chunk.len());
+		match sender.try_send(chunk) {
+			Ok(()) => Ok(()),
+			Err(TrySendError::Full(_)) => {
+				warn!("Pipe write queue full; disconnecting stalled client");
+				writer_lock.take();
+				drop(writer_lock);
+				if let Err(e) = unsafe { DisconnectNamedPipe(self.pipe_handle.raw()) } {
+					trace!("Error disconnecting stalled pipe client: {}", e);
 				}
-				trace!("Received data written to pipe");
 				Ok(())
-			},
-		)
+			}
+			Err(TrySendError::Disconnected(_)) => {
+				debug!("Pipe writer gone while queueing data");
+				writer_lock.take();
+				Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
+			}
+		}
 	}
 
 	#[instrument]
 	fn OnClose(&self) -> Result<()> {
-		self.shutdown.cancel();
-		let mut writer_guard = self.pipe_writer.lock();
-		if let Some(ref mut writer) = *writer_guard {
-			ASYNC_RUNTIME.block_on(writer.shutdown())?;
-			*writer_guard = None;
-		}
+		self.pipe_writer.lock().take();
+		self.shutdown.signal();
 		Ok(())
 	}
 }
@@ -490,5 +673,15 @@ mod tests {
 
 		// Verify the name is stored
 		assert_eq!(callback.name, name);
+	}
+
+	#[test]
+	fn test_shutdown_signal_sets_flag_and_event() {
+		let shutdown = Shutdown::new().expect("shutdown");
+		assert!(!shutdown.is_signalled());
+		assert!(!shutdown.wait(0));
+		shutdown.signal();
+		assert!(shutdown.is_signalled());
+		assert!(shutdown.wait(0));
 	}
 }

@@ -13,6 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod class_factory;
+pub mod overlapped;
 pub mod rd_pipe_plugin;
 pub mod registry;
 pub mod security_descriptor;
@@ -28,12 +29,8 @@ use registry::{
 use registry::{ctx_add_to_registry, ctx_delete_from_registry};
 use std::{
 	panic,
-	sync::{
-		LazyLock,
-		atomic::{AtomicIsize, Ordering},
-	},
+	sync::atomic::{AtomicIsize, Ordering},
 };
-use tokio::runtime::Runtime;
 use tracing::{debug, error, instrument, trace};
 use windows::{
 	Win32::{
@@ -51,14 +48,6 @@ use windows::{
 };
 use windows_core::BOOL;
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
-
-static ASYNC_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-	trace!("Constructing runtime");
-	tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-		.expect("Failed to create Tokio runtime")
-});
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
 
@@ -291,14 +280,6 @@ mod tests {
 		let val = INSTANCE.load(Ordering::Acquire);
 		// In tests, it might be 0 if DllMain hasn't been called
 		assert!(val >= 0);
-	}
-
-	#[test]
-	fn test_async_runtime_lazy_init() {
-		// Test that accessing the runtime doesn't panic
-		// This forces initialization of the LazyLock
-		let _handle = ASYNC_RUNTIME.handle();
-		// If we get here without panicking, the runtime initialized successfully
 	}
 
 	#[test]
