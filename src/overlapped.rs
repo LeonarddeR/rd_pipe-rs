@@ -1,5 +1,5 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
-// Overlapped IO primitives: owned handle/event wrappers and the event-pair wait helper
+// Overlapped IO primitives: owned handle/event wrappers, the shutdown signal and the event-pair wait helper
 // Copyright (C) 2022-2026 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -12,11 +12,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use tracing::error;
 use windows::Win32::{
-	Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0},
+	Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT},
 	System::{
 		IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
-		Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects},
+		Threading::{
+			CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+		},
 	},
 };
 use windows::core::Result;
@@ -62,8 +65,39 @@ pub fn create_event(manual_reset: bool) -> Result<OwnedHandle> {
 	Ok(unsafe { OwnedHandle::new(handle) })
 }
 
-pub fn signal_event(event: &OwnedHandle) -> Result<()> {
-	unsafe { SetEvent(event.raw()) }
+/// Shutdown signal shared across threads: a manual-reset event that stays
+/// signalled once set, waking every pending overlapped wait and poll.
+#[derive(Debug)]
+pub struct Shutdown {
+	event: OwnedHandle,
+}
+
+impl Shutdown {
+	pub fn new() -> Result<Self> {
+		Ok(Self { event: create_event(true)? })
+	}
+
+	pub fn signal(&self) {
+		if let Err(e) = unsafe { SetEvent(self.event.raw()) } {
+			error!("Failed to signal shutdown event: {}", e);
+		}
+	}
+
+	pub fn is_signalled(&self) -> bool {
+		self.wait(0)
+	}
+
+	/// Waits up to `ms` for the shutdown event; true if it fired.
+	pub fn wait(&self, ms: u32) -> bool {
+		match unsafe { WaitForSingleObject(self.event.raw(), ms) } {
+			WAIT_OBJECT_0 => true,
+			WAIT_TIMEOUT => false,
+			_ => {
+				error!("Wait on shutdown event failed: {}", windows::core::Error::from_thread());
+				true
+			}
+		}
+	}
 }
 
 /// Outcome of waiting for a pending overlapped operation.
@@ -77,21 +111,21 @@ pub enum OverlappedWait {
 }
 
 /// Waits for a pending overlapped operation (its event is
-/// `overlapped.hEvent`) or the shutdown event, whichever fires first. On
+/// `overlapped.hEvent`) or the shutdown signal, whichever fires first. On
 /// shutdown the operation is cancelled via `CancelIoEx` and reaped with a
 /// blocking `GetOverlappedResult` so the kernel no longer references
 /// `overlapped` or the IO buffer when this returns.
 ///
 /// # Safety
 /// `overlapped` must reference a pending operation on `handle` whose event
-/// member is a valid auto-reset or manual-reset event, and the IO buffer must
-/// stay alive until this function returns.
+/// member is a valid manual-reset event, and the IO buffer must stay alive
+/// until this function returns.
 pub unsafe fn wait_overlapped(
 	handle: HANDLE,
 	overlapped: &mut OVERLAPPED,
-	shutdown_event: &OwnedHandle,
+	shutdown: &Shutdown,
 ) -> Result<OverlappedWait> {
-	let handles = [overlapped.hEvent, shutdown_event.raw()];
+	let handles = [overlapped.hEvent, shutdown.event.raw()];
 	let status = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
 	const WAIT_SHUTDOWN: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
 	match status {
@@ -148,8 +182,15 @@ mod tests {
 		unsafe { OwnedHandle::new(handle) }
 	}
 
-	fn connect_server(server: &OwnedHandle, shutdown: &OwnedHandle) {
-		let event = create_event(false).expect("event");
+	/// The instance exists before this is called, so the open never races
+	/// the server; `connect_server` handles the resulting
+	/// `ERROR_PIPE_CONNECTED`.
+	fn open_client(addr: &str) -> std::fs::File {
+		std::fs::OpenOptions::new().read(true).write(true).open(addr).expect("client open")
+	}
+
+	fn connect_server(server: &OwnedHandle, shutdown: &Shutdown) {
+		let event = create_event(true).expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let pending = match unsafe { ConnectNamedPipe(server.raw(), Some(&mut ov)) } {
 			Ok(()) => false,
@@ -169,22 +210,13 @@ mod tests {
 	fn wait_overlapped_completes_read() {
 		let addr = r"\\.\pipe\rd_pipe_ov_test_read";
 		let server = make_server(addr);
-		let shutdown = create_event(true).expect("shutdown event");
+		let shutdown = Shutdown::new().expect("shutdown");
 
-		let client = std::thread::spawn(move || {
-			let mut f = loop {
-				match std::fs::OpenOptions::new().read(true).write(true).open(addr) {
-					Ok(f) => break f,
-					Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
-				}
-			};
-			f.write_all(b"ping").expect("client write");
-			f
-		});
-
+		let mut client = open_client(addr);
 		connect_server(&server, &shutdown);
+		client.write_all(b"ping").expect("client write");
 
-		let event = create_event(false).expect("event");
+		let event = create_event(true).expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let mut buf = [0u8; 16];
 		// Synchronous completion still signals the event, so both non-error
@@ -200,29 +232,19 @@ mod tests {
 			}
 			other => panic!("read wait: {other:?}"),
 		}
-		drop(client.join().expect("client thread"));
 	}
 
 	#[test]
 	fn wait_overlapped_returns_shutdown_on_signal() {
 		let addr = r"\\.\pipe\rd_pipe_ov_test_shutdown";
 		let server = make_server(addr);
-		let shutdown = create_event(true).expect("shutdown event");
+		let shutdown = Shutdown::new().expect("shutdown");
 
-		let client = std::thread::spawn(move || {
-			loop {
-				match std::fs::OpenOptions::new().read(true).write(true).open(addr) {
-					Ok(f) => break f,
-					Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
-				}
-			}
-		});
-
+		// Client stays open without writing so the read below stays pending.
+		let _client = open_client(addr);
 		connect_server(&server, &shutdown);
-		let _client = client.join().expect("client thread");
 
-		// Pending read with no data; signal shutdown from another thread.
-		let event = create_event(false).expect("event");
+		let event = create_event(true).expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let mut buf = [0u8; 16];
 		match unsafe { ReadFile(server.raw(), Some(&mut buf), None, Some(&mut ov)) } {
@@ -230,18 +252,25 @@ mod tests {
 			Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
 			Err(e) => panic!("ReadFile: {e}"),
 		}
-		let signaller = {
-			let shutdown_raw = shutdown.raw().0 as usize;
-			std::thread::spawn(move || {
+		std::thread::scope(|s| {
+			s.spawn(|| {
 				std::thread::sleep(std::time::Duration::from_millis(50));
-				let shutdown = HANDLE(shutdown_raw as _);
-				unsafe { SetEvent(shutdown) }.expect("SetEvent");
-			})
-		};
-		match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
-			Ok(OverlappedWait::Shutdown) => {}
-			other => panic!("expected Shutdown, got {other:?}"),
-		}
-		signaller.join().expect("signaller thread");
+				shutdown.signal();
+			});
+			match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
+				Ok(OverlappedWait::Shutdown) => {}
+				other => panic!("expected Shutdown, got {other:?}"),
+			}
+		});
+	}
+
+	#[test]
+	fn shutdown_signal_sets_event() {
+		let shutdown = Shutdown::new().expect("shutdown");
+		assert!(!shutdown.is_signalled());
+		assert!(!shutdown.wait(0));
+		shutdown.signal();
+		assert!(shutdown.is_signalled());
+		assert!(shutdown.wait(0));
 	}
 }

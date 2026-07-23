@@ -17,13 +17,12 @@ use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{
 	E_POINTER, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
-	ERROR_PIPE_NOT_CONNECTED, HLOCAL, WAIT_OBJECT_0, WAIT_TIMEOUT,
+	ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL,
 };
 use windows::Win32::Storage::FileSystem::{
 	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
@@ -33,7 +32,6 @@ use windows::Win32::System::Pipes::{
 	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
 	PIPE_WAIT,
 };
-use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::{
 	Win32::{
 		Foundation::E_UNEXPECTED,
@@ -48,7 +46,7 @@ use windows::{
 use windows_core::{BOOL, OutRef, Owned};
 use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
-use crate::overlapped::{OverlappedWait, OwnedHandle, create_event, signal_event, wait_overlapped};
+use crate::overlapped::{OverlappedWait, OwnedHandle, Shutdown, create_event, wait_overlapped};
 use crate::security_descriptor::{get_logon_sid, security_attributes_from_sddl};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
@@ -191,14 +189,14 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 /// Upper bound for a single `OnDataReceived` chunk; RDS fragments DVC data
-/// far below this.
-const MAX_CHUNK_SIZE: usize = 64 * 1024;
+/// far below this. Capped at the pipe buffer size so an accepted chunk never
+/// needs a partial write.
+const MAX_CHUNK_SIZE: usize = PIPE_BUFFER_SIZE as usize;
 /// Chunks queued between the RDS callback thread and the pipe writer thread
 /// before the client is considered stalled.
 const WRITE_QUEUE_CAP: usize = 512;
 
-fn channel_write(agile: &AgileReference<IWTSVirtualChannel>, data: &[u8]) -> Result<()> {
-	let channel = agile.resolve()?;
+fn channel_write(channel: &IWTSVirtualChannel, data: &[u8]) -> Result<()> {
 	unsafe { channel.Write(data, None) }
 }
 
@@ -209,45 +207,8 @@ fn build_pipe_sddl(logon_sid: &str) -> String {
 	format!("D:(A;;GRGW;;;{logon_sid})S:(ML;;NRNW;;;ME)")
 }
 
-/// Shutdown signal shared by the COM callback and the pipe threads: a flag
-/// for loop conditions plus a manual-reset event that wakes pending
-/// overlapped waits.
-#[derive(Debug)]
-struct Shutdown {
-	flag: AtomicBool,
-	event: OwnedHandle,
-}
-
-impl Shutdown {
-	fn new() -> Result<Self> {
-		Ok(Self { flag: AtomicBool::new(false), event: create_event(true)? })
-	}
-
-	fn signal(&self) {
-		self.flag.store(true, Ordering::Release);
-		if let Err(e) = signal_event(&self.event) {
-			error!("Failed to signal shutdown event: {}", e);
-		}
-	}
-
-	fn is_signalled(&self) -> bool {
-		self.flag.load(Ordering::Acquire)
-	}
-
-	/// Waits up to `ms` for the shutdown event; true if it fired.
-	fn wait(&self, ms: u32) -> bool {
-		match unsafe { WaitForSingleObject(self.event.raw(), ms) } {
-			WAIT_OBJECT_0 => true,
-			WAIT_TIMEOUT => false,
-			_ => {
-				error!("Wait on shutdown event failed: {}", Error::from_thread());
-				true
-			}
-		}
-	}
-}
-
 /// Result of a single overlapped pipe operation.
+#[derive(Debug)]
 enum PipeIo {
 	Done(u32),
 	Disconnected(Error),
@@ -266,10 +227,10 @@ fn classify_error(e: Error) -> PipeIo {
 	}
 }
 
-/// Runs one overlapped op to completion: `start` issues the op against
-/// `handle` with the given OVERLAPPED; the completion (also for
-/// synchronously finished ops, which still signal the event) is awaited
-/// against the shutdown event.
+/// Runs one overlapped op to completion: `start` issues the op against the
+/// handle with the given OVERLAPPED and returns the byte count of a
+/// synchronous completion, which is consumed directly. On `ERROR_IO_PENDING`
+/// the op is awaited against the shutdown signal.
 fn run_overlapped<F>(
 	handle: &OwnedHandle,
 	shutdown: &Shutdown,
@@ -277,15 +238,15 @@ fn run_overlapped<F>(
 	start: F,
 ) -> PipeIo
 where
-	F: FnOnce(&mut OVERLAPPED) -> Result<()>,
+	F: FnOnce(HANDLE, &mut OVERLAPPED) -> Result<u32>,
 {
 	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
-	match start(&mut ov) {
-		Ok(()) => {}
+	match start(handle.raw(), &mut ov) {
+		Ok(n) => return PipeIo::Done(n),
 		Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
 		Err(e) => return classify_error(e),
 	}
-	match unsafe { wait_overlapped(handle.raw(), &mut ov, &shutdown.event) } {
+	match unsafe { wait_overlapped(handle.raw(), &mut ov, shutdown) } {
 		Ok(OverlappedWait::Completed(n)) => PipeIo::Done(n),
 		Ok(OverlappedWait::Shutdown) => PipeIo::Shutdown,
 		Err(e) => classify_error(e),
@@ -293,24 +254,26 @@ where
 }
 
 /// Waits for a pipe client on the instance. `ERROR_PIPE_CONNECTED` means the
-/// client beat us to it and never pends the OVERLAPPED, so it is completed
-/// success here rather than via `wait_overlapped`.
+/// client beat us to it and never pends the OVERLAPPED, so it maps to a
+/// synchronous completion.
 fn connect_pipe(handle: &OwnedHandle, shutdown: &Shutdown, op_event: &OwnedHandle) -> PipeIo {
-	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
-	match unsafe { ConnectNamedPipe(handle.raw(), Some(&mut ov)) } {
-		Ok(()) => PipeIo::Done(0),
-		Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => {
-			trace!("Pipe client connected before ConnectNamedPipe");
-			PipeIo::Done(0)
-		}
-		Err(e) if e.code() == ERROR_IO_PENDING.into() => {
-			match unsafe { wait_overlapped(handle.raw(), &mut ov, &shutdown.event) } {
-				Ok(OverlappedWait::Completed(n)) => PipeIo::Done(n),
-				Ok(OverlappedWait::Shutdown) => PipeIo::Shutdown,
-				Err(e) => classify_error(e),
+	run_overlapped(handle, shutdown, op_event, |h, ov| {
+		match unsafe { ConnectNamedPipe(h, Some(ov)) } {
+			Ok(()) => Ok(0),
+			Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => {
+				trace!("Pipe client connected before ConnectNamedPipe");
+				Ok(0)
 			}
+			Err(e) => Err(e),
 		}
-		Err(e) => classify_error(e),
+	})
+}
+
+/// Best-effort disconnect of the pipe instance; also the way a pending
+/// overlapped op on the same handle is kicked awake from another thread.
+fn disconnect_pipe(handle: &OwnedHandle, context: &str) {
+	if let Err(e) = unsafe { DisconnectNamedPipe(handle.raw()) } {
+		trace!("Error disconnecting pipe instance ({}): {}", context, e);
 	}
 }
 
@@ -343,7 +306,6 @@ impl RdPipeChannelCallback {
 			let pipe_handle = pipe_handle.clone();
 			let pipe_writer = pipe_writer.clone();
 			let shutdown = shutdown.clone();
-			let addr = addr.clone();
 			thread::Builder::new()
 				.name(format!("rd_pipe pump {addr}"))
 				.spawn(move || {
@@ -398,18 +360,24 @@ fn run_pipe_pump(
 	shutdown: Arc<Shutdown>,
 	addr: String,
 ) {
-	let op_event = match create_event(false) {
+	let op_event = match create_event(true) {
 		Ok(e) => e,
 		Err(e) => {
 			error!("Can't create pump op event: {}", e);
 			return;
 		}
 	};
+	let channel = match channel_agile.resolve() {
+		Ok(c) => c,
+		Err(e) => {
+			error!("Can't resolve channel reference: {}", e);
+			return;
+		}
+	};
 	let mut buf = vec![0u8; PIPE_BUFFER_SIZE as usize];
 	while !shutdown.is_signalled() {
 		trace!("Initiate connection to pipe client");
-		let connect_res = connect_pipe(&pipe_handle, &shutdown, &op_event);
-		match connect_res {
+		match connect_pipe(&pipe_handle, &shutdown, &op_event) {
 			PipeIo::Done(_) => {}
 			PipeIo::Shutdown => {
 				trace!("Shutdown signalled while awaiting pipe client connection");
@@ -417,9 +385,7 @@ fn run_pipe_pump(
 			}
 			PipeIo::Disconnected(e) | PipeIo::Failed(e) => {
 				error!("Error connecting to pipe client: {}", e);
-				if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
-					trace!("Error resetting pipe instance: {}", e);
-				}
+				disconnect_pipe(&pipe_handle, "connect retry");
 				if shutdown.wait(100) {
 					trace!("Shutdown signalled during pipe reconnect retry");
 					break;
@@ -430,10 +396,7 @@ fn run_pipe_pump(
 		trace!("Pipe client connected");
 
 		let (sender, receiver) = sync_channel(WRITE_QUEUE_CAP);
-		{
-			let mut writer_guard = pipe_writer.lock();
-			*writer_guard = Some(sender);
-		}
+		*pipe_writer.lock() = Some(sender);
 		let writer_thread = {
 			let pipe_handle = pipe_handle.clone();
 			let shutdown = shutdown.clone();
@@ -449,7 +412,7 @@ fn run_pipe_pump(
 			}
 		};
 
-		match channel_write(&channel_agile, &[MSG_XON]) {
+		match channel_write(&channel, &[MSG_XON]) {
 			Ok(()) => trace!("Wrote XON to channel"),
 			Err(e) => {
 				error!("Error writing XON to channel: {}", e);
@@ -458,10 +421,11 @@ fn run_pipe_pump(
 		}
 
 		trace!("Initiating pipe_reader loop");
-		let mut exiting = shutdown.is_signalled();
-		while !exiting {
-			let read_res = run_overlapped(&pipe_handle, &shutdown, &op_event, |ov| unsafe {
-				ReadFile(pipe_handle.raw(), Some(buf.as_mut_slice()), None, Some(ov as *mut _))
+		while !shutdown.is_signalled() {
+			let read_res = run_overlapped(&pipe_handle, &shutdown, &op_event, |h, ov| unsafe {
+				let mut n = 0u32;
+				ReadFile(h, Some(buf.as_mut_slice()), Some(&mut n), Some(ov as *mut _))?;
+				Ok(n)
 			});
 			match read_res {
 				PipeIo::Done(0) => {
@@ -469,7 +433,7 @@ fn run_pipe_pump(
 				}
 				PipeIo::Done(n) => {
 					trace!("read {} bytes", n);
-					match channel_write(&channel_agile, &buf[..n as usize]) {
+					match channel_write(&channel, &buf[..n as usize]) {
 						Ok(()) => trace!("Wrote {} bytes to channel", n),
 						Err(e) => {
 							error!("Error during write to channel: {}", e);
@@ -479,7 +443,7 @@ fn run_pipe_pump(
 				}
 				PipeIo::Shutdown => {
 					trace!("Shutdown signalled inside reader loop");
-					exiting = true;
+					break;
 				}
 				PipeIo::Disconnected(e) => {
 					info!("Pipe closed by client: {}", e);
@@ -492,17 +456,12 @@ fn run_pipe_pump(
 			}
 		}
 		trace!("End of pipe_reader loop, reclaiming pipe instance");
-		match channel_write(&channel_agile, &[MSG_XOFF]) {
+		match channel_write(&channel, &[MSG_XOFF]) {
 			Ok(()) => trace!("Wrote XOFF to channel"),
 			Err(e) => error!("Error writing XOFF to channel: {}", e),
 		}
-		{
-			let mut writer_guard = pipe_writer.lock();
-			writer_guard.take();
-		}
-		if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
-			trace!("Error disconnecting pipe instance: {}", e);
-		}
+		pipe_writer.lock().take();
+		disconnect_pipe(&pipe_handle, "teardown");
 		if let Err(e) = writer_thread.join() {
 			error!("Pipe writer thread panicked: {:?}", e);
 			break;
@@ -518,7 +477,7 @@ fn run_pipe_writer(
 	receiver: Receiver<Vec<u8>>,
 	shutdown: Arc<Shutdown>,
 ) {
-	let op_event = match create_event(false) {
+	let op_event = match create_event(true) {
 		Ok(e) => e,
 		Err(e) => {
 			error!("Can't create writer op event: {}", e);
@@ -529,10 +488,11 @@ fn run_pipe_writer(
 		if shutdown.is_signalled() {
 			break;
 		}
-		let write_res = run_overlapped(&pipe_handle, &shutdown, &op_event, |ov| unsafe {
-			WriteFile(pipe_handle.raw(), Some(chunk.as_slice()), None, Some(ov as *mut _))
-		});
-		match write_res {
+		match run_overlapped(&pipe_handle, &shutdown, &op_event, |h, ov| unsafe {
+			let mut n = 0u32;
+			WriteFile(h, Some(chunk.as_slice()), Some(&mut n), Some(ov as *mut _))?;
+			Ok(n)
+		}) {
 			PipeIo::Done(n) => {
 				trace!("Wrote {} bytes to pipe", n);
 				if (n as usize) != chunk.len() {
@@ -550,9 +510,7 @@ fn run_pipe_writer(
 			}
 			PipeIo::Failed(e) => {
 				error!("Error writing to pipe: {}", e);
-				if let Err(e) = unsafe { DisconnectNamedPipe(pipe_handle.raw()) } {
-					trace!("Error disconnecting pipe instance after write failure: {}", e);
-				}
+				disconnect_pipe(&pipe_handle, "write failure");
 				break;
 			}
 		}
@@ -563,7 +521,7 @@ fn run_pipe_writer(
 impl fmt::Debug for RdPipeChannelCallback_Impl {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.debug_struct("RdPipeChannelCallback_Impl")
-			.field("has_pipe_writer", &self.pipe_writer.lock().is_some())
+			.field("has_pipe_writer", &self.pipe_writer.try_lock().map(|g| g.is_some()))
 			.field("shutdown_signalled", &self.shutdown.is_signalled())
 			.finish()
 	}
@@ -571,7 +529,7 @@ impl fmt::Debug for RdPipeChannelCallback_Impl {
 
 impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 	#[allow(clippy::not_unsafe_ptr_arg_deref)]
-	#[instrument]
+	#[instrument(skip(self))]
 	fn OnDataReceived(&self, cbsize: u32, pbuffer: *const u8) -> Result<()> {
 		debug!("Data received, buffer has size {}", cbsize);
 		if cbsize == 0 {
@@ -597,9 +555,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 				warn!("Pipe write queue full; disconnecting stalled client");
 				writer_lock.take();
 				drop(writer_lock);
-				if let Err(e) = unsafe { DisconnectNamedPipe(self.pipe_handle.raw()) } {
-					trace!("Error disconnecting stalled pipe client: {}", e);
-				}
+				disconnect_pipe(&self.pipe_handle, "stalled client");
 				Ok(())
 			}
 			Err(TrySendError::Disconnected(_)) => {
@@ -672,12 +628,59 @@ mod tests {
 	}
 
 	#[test]
-	fn test_shutdown_signal_sets_flag_and_event() {
+	fn run_overlapped_consumes_sync_completion_without_waiting() {
+		use std::io::{Read, Write};
+
+		let addr = r"\\.\pipe\rd_pipe_sync_completion_test";
+		let handle = unsafe {
+			CreateNamedPipeW(
+				&HSTRING::from(addr),
+				FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_ACCESS_DUPLEX,
+				PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+				1,
+				PIPE_BUFFER_SIZE,
+				PIPE_BUFFER_SIZE,
+				0,
+				None,
+			)
+		};
+		assert!(!handle.is_invalid(), "CreateNamedPipeW: {:?}", Error::from_thread());
+		let server = unsafe { OwnedHandle::new(handle) };
+		let mut client =
+			std::fs::OpenOptions::new().read(true).write(true).open(addr).expect("client open");
 		let shutdown = Shutdown::new().expect("shutdown");
-		assert!(!shutdown.is_signalled());
-		assert!(!shutdown.wait(0));
+		let op_event = create_event(true).expect("op event");
+		assert!(matches!(connect_pipe(&server, &shutdown, &op_event), PipeIo::Done(_)));
+
+		// A signalled shutdown makes the wait path return `Shutdown`, so a
+		// `Done` result below proves the synchronous completion was consumed
+		// directly from the issuing call.
 		shutdown.signal();
-		assert!(shutdown.is_signalled());
-		assert!(shutdown.wait(0));
+
+		client.write_all(b"ping").expect("client write");
+		let mut buf = [0u8; 8];
+		let read = run_overlapped(&server, &shutdown, &op_event, |h, ov| unsafe {
+			let mut n = 0u32;
+			ReadFile(h, Some(&mut buf), Some(&mut n), Some(ov as *mut _))?;
+			Ok(n)
+		});
+		match read {
+			PipeIo::Done(n) => assert_eq!(&buf[..n as usize], b"ping"),
+			other => panic!("expected sync Done, got {other:?}"),
+		}
+
+		let chunk = b"pong";
+		let write = run_overlapped(&server, &shutdown, &op_event, |h, ov| unsafe {
+			let mut n = 0u32;
+			WriteFile(h, Some(chunk), Some(&mut n), Some(ov as *mut _))?;
+			Ok(n)
+		});
+		match write {
+			PipeIo::Done(n) => assert_eq!(n as usize, chunk.len()),
+			other => panic!("expected sync Done, got {other:?}"),
+		}
+		let mut got = [0u8; 4];
+		client.read_exact(&mut got).expect("client read");
+		assert_eq!(&got, b"pong");
 	}
 }

@@ -35,6 +35,7 @@ The project now includes comprehensive unit tests for the following modules:
 ### 4b. Overlapped IO Module (`src/overlapped.rs`)
 - **Completion path**: overlapped `ReadFile` against a real pipe pair completes via `wait_overlapped`
 - **Shutdown path**: signalling the shutdown event cancels a pending read and returns `Shutdown`
+- **Shutdown signal**: `Shutdown::signal` is observable via `is_signalled`/`wait`
 
 ### 5. Class Factory Module (`src/class_factory.rs`)
 - **Construction tests**: Verify ClassFactory can be created and converted to IClassFactory
@@ -56,7 +57,8 @@ binaries:
   `OnNewChannelConnection`, named-pipe data round-trips in both directions,
   XON/XOFF flow control, client reconnect against the still-claimed pipe
   instance, stalled-client disconnect at the write-queue cap, oversized
-  chunk rejection, `OnClose` cleanup, and multi-channel listener creation.
+  chunk rejection, `OnClose` cleanup (including discard of queued writer
+  data), and multi-channel listener creation.
 
 A shared helper module `tests/common/mod.rs` provides:
 
@@ -258,15 +260,15 @@ Tests run automatically on:
 Current test coverage by module:
 - `registry.rs`: unit tests (constants, GUID, path formatting)
 - `security_descriptor.rs`: unit tests (SDDL, SID, memory management)
-- `overlapped.rs`: unit tests (overlapped completion, shutdown cancellation)
-- `rd_pipe_plugin.rs`: unit tests (constants, construction, naming, shutdown signal)
+- `overlapped.rs`: unit tests (overlapped completion, shutdown cancellation, shutdown signal)
+- `rd_pipe_plugin.rs`: unit tests (constants, construction, naming, synchronous overlapped completion)
 - `lib.rs`: unit tests (constants, parsing)
 - `class_factory.rs`: unit tests (construction, interfaces, Debug impl)
 
-**Total**: 30 unit tests + 18 integration tests covering core functionality and end-to-end COM/pipe lifecycle
+**Total**: 31 unit tests + 19 integration tests covering core functionality and end-to-end COM/pipe lifecycle
 
 - `tests/dll_smoke.rs`: 5 integration tests (DLL load, exports, bad CLSID/IID, FakeVirtualChannel smoke, HkcuOverride smoke)
-- `tests/dvc_emulation.rs`: 13 integration tests (full plugin lifecycle scenarios)
+- `tests/dvc_emulation.rs`: 14 integration tests (full plugin lifecycle scenarios)
 
 ## Future Improvements
 

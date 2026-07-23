@@ -75,6 +75,15 @@ fn wait_until(deadline: Duration, mut pred: impl FnMut() -> bool) -> bool {
 	}
 }
 
+/// Wait for the plugin's first channel write after a client connects (XON),
+/// which also means the pipe writer is registered.
+fn wait_for_xon(chan_state: &common::FakeChannelState) {
+	assert!(
+		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
+		"timed out waiting for XON"
+	);
+}
+
 #[test]
 #[serial]
 fn new_channel_connection_opens_named_pipe() {
@@ -124,10 +133,7 @@ fn channel_to_pipe_round_trip() {
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 
 	// Wait for XON so the plugin's pipe writer is registered.
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 
 	// Push data via OnDataReceived -> plugin writes to pipe -> client reads.
 	let payload = b"world";
@@ -167,10 +173,7 @@ fn pipe_close_writes_xoff_to_channel() {
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 
 	// Wait for XON.
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 
 	// Drop client -> plugin read fails -> writes XOFF (0x13).
 	drop(client);
@@ -209,10 +212,7 @@ fn pipe_to_channel_round_trip() {
 	let mut client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 
 	// Wait for plugin to write XON (0x11).
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 	let first_writes = chan_state.snapshot_writes();
 	assert_eq!(first_writes[0], vec![0x11u8], "first write must be XON");
 
@@ -297,22 +297,19 @@ fn on_close_releases_pipe_writer() {
 
 	// Verify the writer is released: subsequent OnDataReceived must
 	// return ERROR_PIPE_NOT_CONNECTED because pipe_writer is None.
-	let deadline = Instant::now() + Duration::from_secs(5);
-	loop {
-		let result = unsafe { chan_cb.OnDataReceived(b"after-close") };
-		match result {
-			Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into() => {
-				break;
-			}
-			Err(e) if Instant::now() >= deadline => {
-				panic!("unexpected error from OnDataReceived after OnClose: {e:?}")
-			}
-			Ok(()) if Instant::now() >= deadline => {
-				panic!("OnDataReceived after OnClose unexpectedly succeeded")
-			}
-			_ => std::thread::sleep(Duration::from_millis(50)),
-		}
-	}
+	let mut last = None;
+	assert!(
+		wait_until(Duration::from_secs(5), || {
+			let result = unsafe { chan_cb.OnDataReceived(b"after-close") };
+			let released = matches!(
+				&result,
+				Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+			);
+			last = Some(result);
+			released
+		}),
+		"OnDataReceived after OnClose never returned ERROR_PIPE_NOT_CONNECTED; last: {last:?}"
+	);
 
 	drop(plugin);
 }
@@ -377,10 +374,7 @@ fn pipe_client_can_reconnect_after_disconnect() {
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 
 	// Wait for XON from the first connection.
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for first XON"
-	);
+	wait_for_xon(&chan_state);
 
 	// Disconnect and wait for XOFF so the plugin has observed it.
 	drop(client);
@@ -451,10 +445,7 @@ fn stalled_client_disconnected_at_cap() {
 
 	// Client connects and never reads.
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 
 	// Flood the channel with max-size chunks. Every call must return
 	// promptly; once the queue cap trips, the plugin disconnects the
@@ -519,10 +510,7 @@ fn oversized_chunk_rejected() {
 	let addr = common::channel_addr(&channel_iface);
 
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 
 	let oversized = vec![0x5Au8; 64 * 1024 + 1];
 	let result = unsafe { chan_cb.OnDataReceived(&oversized) };
@@ -546,6 +534,67 @@ fn oversized_chunk_rejected() {
 	unsafe {
 		chan_cb.OnClose().expect("OnClose");
 	}
+	drop(plugin);
+}
+
+/// Teardown discards queued writer data rather than draining it: `OnClose`
+/// with unwritten chunks queued to a non-reading client severs the
+/// connection promptly instead of hanging on the parked writer.
+#[test]
+#[serial]
+fn on_close_with_queued_data_discards_and_disconnects() {
+	let hkcu = common::HkcuOverride::new().expect("override hkcu");
+	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+
+	let dll = common::DllHandle::load();
+	let plugin = common::create_plugin(dll);
+
+	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+	unsafe {
+		plugin.Initialize(&mgr_iface).expect("Initialize");
+	}
+
+	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
+	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
+	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
+	let addr = common::channel_addr(&channel_iface);
+
+	// Client connects and never reads.
+	let mut client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
+	wait_for_xon(&chan_state);
+
+	// Two max-size chunks: the first fills the outbound pipe buffer, the
+	// second parks the writer thread in a pending overlapped write.
+	let chunk = vec![0xC3u8; 64 * 1024];
+	unsafe {
+		chan_cb.OnDataReceived(&chunk).expect("first OnDataReceived");
+		chan_cb.OnDataReceived(&chunk).expect("second OnDataReceived");
+	}
+	// Give the writer time to reach the pending write before closing.
+	std::thread::sleep(Duration::from_millis(100));
+
+	unsafe {
+		chan_cb.OnClose().expect("OnClose");
+	}
+
+	// Shutdown must cut the parked writer off and disconnect the instance;
+	// the client observes that as failing writes. A hang in teardown would
+	// leave the connection alive and trip this timeout.
+	assert!(
+		wait_until(Duration::from_secs(5), || client.write(b"x").is_err()),
+		"pipe never disconnected after OnClose with queued data"
+	);
+
+	// The writer slot is gone as well.
+	let r = unsafe { chan_cb.OnDataReceived(b"\xab") };
+	assert!(
+		matches!(
+			r,
+			Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+		),
+		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {r:?}"
+	);
+
 	drop(plugin);
 }
 
@@ -576,10 +625,7 @@ fn on_close_terminates_reader_cooperatively_while_client_connected() {
 	let _client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 
 	// Wait for XON, confirming the pipe connection handshake completed.
-	assert!(
-		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
-		"timed out waiting for XON"
-	);
+	wait_for_xon(&chan_state);
 
 	// Cooperative shutdown: OnClose while the client is still connected.
 	unsafe { chan_cb.OnClose().expect("OnClose") };

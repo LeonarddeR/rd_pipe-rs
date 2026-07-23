@@ -75,7 +75,7 @@ Module map:
 
 - `lib.rs` — DLL exports, logging, install dispatcher.
 - `class_factory.rs` — `IClassFactory` impl producing `IWTSPlugin`.
-- `overlapped.rs` — `OwnedHandle` RAII wrapper, event creation, `wait_overlapped` (op event + shutdown event pair, `CancelIoEx` on shutdown).
+- `overlapped.rs` — `OwnedHandle` RAII wrapper, event creation, `Shutdown` signal, `wait_overlapped` (op event + shutdown event pair, `CancelIoEx` on shutdown).
 - `rd_pipe_plugin.rs` — plugin, listener callback, channel callback, pump/writer threads. **Core of the crate.**
 - `registry.rs` — CLSID constant, registry path constants, add/delete helpers for InprocServer, MSTS AddIns, Citrix modules.
 - `security_descriptor.rs` — logon SID lookup and SDDL → `SECURITY_ATTRIBUTES` conversion (caller must `LocalFree` the descriptor).
