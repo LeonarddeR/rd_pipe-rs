@@ -1,5 +1,5 @@
 // RD Pipe: Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes, written in Rust
-// Overlapped IO primitives: owned handle/event wrappers, the shutdown signal and the event-pair wait helper
+// Overlapped IO primitives: owned handle/event wrappers, the shutdown signal and the overlapped wait/run helpers
 // Copyright (C) 2022-2026 Leonard de Ruijter <alderuijter@gmail.com>
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -12,9 +12,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
 use windows::Win32::{
-	Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT},
+	Foundation::{CloseHandle, ERROR_IO_PENDING, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT},
 	System::{
 		IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
 		Threading::{
@@ -58,33 +59,35 @@ impl Drop for OwnedHandle {
 	}
 }
 
-/// Creates an unnamed event. Manual-reset events stay signalled until reset,
-/// auto-reset events release exactly one waiter per signal.
-pub fn create_event(manual_reset: bool) -> Result<OwnedHandle> {
-	let handle = unsafe { CreateEventW(None, manual_reset, false, None) }?;
+/// Creates an unnamed manual-reset event; it stays signalled until reset.
+pub fn create_event() -> Result<OwnedHandle> {
+	let handle = unsafe { CreateEventW(None, true, false, None) }?;
 	Ok(unsafe { OwnedHandle::new(handle) })
 }
 
 /// Shutdown signal shared across threads: a manual-reset event that stays
-/// signalled once set, waking every pending overlapped wait and poll.
+/// signalled once set, waking every pending overlapped wait. An atomic flag
+/// mirrors the event state so `is_signalled` polls without a kernel wait.
 #[derive(Debug)]
 pub struct Shutdown {
 	event: OwnedHandle,
+	signalled: AtomicBool,
 }
 
 impl Shutdown {
 	pub fn new() -> Result<Self> {
-		Ok(Self { event: create_event(true)? })
+		Ok(Self { event: create_event()?, signalled: AtomicBool::new(false) })
 	}
 
 	pub fn signal(&self) {
+		self.signalled.store(true, Ordering::Release);
 		if let Err(e) = unsafe { SetEvent(self.event.raw()) } {
 			error!("Failed to signal shutdown event: {}", e);
 		}
 	}
 
 	pub fn is_signalled(&self) -> bool {
-		self.wait(0)
+		self.signalled.load(Ordering::Acquire)
 	}
 
 	/// Waits up to `ms` for the shutdown event; true if it fired.
@@ -146,22 +149,43 @@ pub unsafe fn wait_overlapped(
 	}
 }
 
+/// Runs one overlapped op to completion: `start` issues the op against the
+/// handle with an `OVERLAPPED` carrying `op_event` and returns the byte
+/// count of a synchronous completion, which is consumed directly. On
+/// `ERROR_IO_PENDING` the op is awaited via [`wait_overlapped`]; any other
+/// start error is returned as-is. The IO buffer `start` hands to the kernel
+/// must be borrowed from outside the closure so it stays alive until this
+/// returns.
+pub(crate) fn run_overlapped<F>(
+	handle: &OwnedHandle,
+	shutdown: &Shutdown,
+	op_event: &OwnedHandle,
+	start: F,
+) -> Result<OverlappedWait>
+where
+	F: FnOnce(HANDLE, &mut OVERLAPPED) -> Result<u32>,
+{
+	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
+	match start(handle.raw(), &mut ov) {
+		Ok(n) => return Ok(OverlappedWait::Completed(n)),
+		Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
+		Err(e) => return Err(e),
+	}
+	unsafe { wait_overlapped(handle.raw(), &mut ov, shutdown) }
+}
+
 #[cfg(test)]
-mod tests {
-	use super::*;
-	use std::io::Write;
-	use windows::Win32::{
-		Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED},
-		Storage::FileSystem::{
-			FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile,
-		},
-		System::Pipes::{
-			ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
-		},
+pub(crate) mod test_util {
+	use super::OwnedHandle;
+	use windows::Win32::Storage::FileSystem::{
+		FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+	};
+	use windows::Win32::System::Pipes::{
+		CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 	};
 	use windows::core::HSTRING;
 
-	fn make_server(addr: &str) -> OwnedHandle {
+	pub(crate) fn make_server(addr: &str) -> OwnedHandle {
 		let handle = unsafe {
 			CreateNamedPipeW(
 				&HSTRING::from(addr),
@@ -183,26 +207,45 @@ mod tests {
 	}
 
 	/// The instance exists before this is called, so the open never races
-	/// the server; `connect_server` handles the resulting
+	/// the server; the subsequent connect handles the resulting
 	/// `ERROR_PIPE_CONNECTED`.
-	fn open_client(addr: &str) -> std::fs::File {
+	pub(crate) fn open_client(addr: &str) -> std::fs::File {
 		std::fs::OpenOptions::new().read(true).write(true).open(addr).expect("client open")
 	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::test_util::{make_server, open_client};
+	use super::*;
+	use std::io::Write;
+	use windows::Win32::{
+		Foundation::ERROR_PIPE_CONNECTED, Storage::FileSystem::ReadFile,
+		System::Pipes::ConnectNamedPipe,
+	};
 
 	fn connect_server(server: &OwnedHandle, shutdown: &Shutdown) {
-		let event = create_event(true).expect("event");
-		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
-		let pending = match unsafe { ConnectNamedPipe(server.raw(), Some(&mut ov)) } {
-			Ok(()) => false,
-			Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => false,
-			Err(e) if e.code() == ERROR_IO_PENDING.into() => true,
-			Err(e) => panic!("ConnectNamedPipe: {e}"),
-		};
-		if pending {
-			match unsafe { wait_overlapped(server.raw(), &mut ov, shutdown) } {
-				Ok(OverlappedWait::Completed(_)) => {}
-				other => panic!("connect wait: {other:?}"),
+		let event = create_event().expect("event");
+		let res = run_overlapped(server, shutdown, &event, |h, ov| {
+			match unsafe { ConnectNamedPipe(h, Some(ov)) } {
+				Ok(()) => Ok(0),
+				Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => Ok(0),
+				Err(e) => Err(e),
 			}
+		});
+		match res {
+			Ok(OverlappedWait::Completed(_)) => {}
+			other => panic!("connect wait: {other:?}"),
+		}
+	}
+
+	/// Issues an overlapped read; a synchronous completion still signals the
+	/// event, so the caller awaits both non-error outcomes identically.
+	fn start_read(server: &OwnedHandle, ov: &mut OVERLAPPED, buf: &mut [u8]) {
+		match unsafe { ReadFile(server.raw(), Some(buf), None, Some(ov as *mut _)) } {
+			Ok(()) => {}
+			Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
+			Err(e) => panic!("ReadFile: {e}"),
 		}
 	}
 
@@ -216,16 +259,10 @@ mod tests {
 		connect_server(&server, &shutdown);
 		client.write_all(b"ping").expect("client write");
 
-		let event = create_event(true).expect("event");
+		let event = create_event().expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let mut buf = [0u8; 16];
-		// Synchronous completion still signals the event, so both non-error
-		// outcomes are awaited identically.
-		match unsafe { ReadFile(server.raw(), Some(&mut buf), None, Some(&mut ov)) } {
-			Ok(()) => {}
-			Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
-			Err(e) => panic!("ReadFile: {e}"),
-		}
+		start_read(&server, &mut ov, &mut buf);
 		match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
 			Ok(OverlappedWait::Completed(n)) => {
 				assert_eq!(&buf[..n as usize], b"ping");
@@ -244,14 +281,10 @@ mod tests {
 		let _client = open_client(addr);
 		connect_server(&server, &shutdown);
 
-		let event = create_event(true).expect("event");
+		let event = create_event().expect("event");
 		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
 		let mut buf = [0u8; 16];
-		match unsafe { ReadFile(server.raw(), Some(&mut buf), None, Some(&mut ov)) } {
-			Ok(()) => {}
-			Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
-			Err(e) => panic!("ReadFile: {e}"),
-		}
+		start_read(&server, &mut ov, &mut buf);
 		std::thread::scope(|s| {
 			s.spawn(|| {
 				std::thread::sleep(std::time::Duration::from_millis(50));

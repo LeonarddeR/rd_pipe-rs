@@ -265,7 +265,7 @@ Current test coverage by module:
 - `lib.rs`: unit tests (constants, parsing)
 - `class_factory.rs`: unit tests (construction, interfaces, Debug impl)
 
-**Total**: 31 unit tests + 19 integration tests covering core functionality and end-to-end COM/pipe lifecycle
+**Total**: 32 unit tests + 19 integration tests covering core functionality and end-to-end COM/pipe lifecycle
 
 - `tests/dll_smoke.rs`: 5 integration tests (DLL load, exports, bad CLSID/IID, FakeVirtualChannel smoke, HkcuOverride smoke)
 - `tests/dvc_emulation.rs`: 14 integration tests (full plugin lifecycle scenarios)
