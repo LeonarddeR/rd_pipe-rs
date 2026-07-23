@@ -405,6 +405,8 @@ fn run_pipe_pump(
 			Ok(t) => t,
 			Err(e) => {
 				error!("Failed to spawn pipe writer thread: {}", e);
+				pipe_writer.lock().take();
+				disconnect_pipe(&pipe_handle, "writer spawn failure");
 				break;
 			}
 		};
