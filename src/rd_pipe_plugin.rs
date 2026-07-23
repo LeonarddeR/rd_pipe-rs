@@ -21,8 +21,8 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{
-	E_POINTER, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
-	ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL,
+	E_POINTER, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+	ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL,
 };
 use windows::Win32::Storage::FileSystem::{
 	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
@@ -216,6 +216,7 @@ fn classify_error(e: Error) -> PipeIo {
 	if e.code() == ERROR_BROKEN_PIPE.into()
 		|| e.code() == ERROR_PIPE_NOT_CONNECTED.into()
 		|| e.code() == ERROR_NO_DATA.into()
+		|| e.code() == ERROR_OPERATION_ABORTED.into()
 	{
 		PipeIo::Disconnected(e)
 	} else {
@@ -674,5 +675,14 @@ mod tests {
 		let mut got = [0u8; 4];
 		client.read_exact(&mut got).expect("client read");
 		assert_eq!(&got, b"pong");
+	}
+
+	#[test]
+	fn operation_aborted_classified_as_disconnected() {
+		// A pending read/write aborted by a cross-thread `DisconnectNamedPipe`
+		// (e.g. the stalled-client path) completes with ERROR_OPERATION_ABORTED,
+		// which is a disconnect, not a failure.
+		let pio = classify_error(Error::from(ERROR_OPERATION_ABORTED));
+		assert!(matches!(pio, PipeIo::Disconnected(_)), "expected Disconnected, got {pio:?}");
 	}
 }
