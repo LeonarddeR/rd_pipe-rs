@@ -56,9 +56,9 @@ binaries:
   factory creation, `Initialize` against a fake `IWTSVirtualChannelManager`,
   `OnNewChannelConnection`, named-pipe data round-trips in both directions,
   XON/XOFF flow control, client reconnect against the still-claimed pipe
-  instance, stalled-client disconnect at the write-queue cap, oversized
-  chunk rejection, `OnClose` cleanup (including discard of queued writer
-  data), and multi-channel listener creation.
+  instance, stalled-client disconnect at the write-queue cap, forwarding
+  of a chunk larger than the pipe buffer, `OnClose` cleanup (including
+  discard of queued writer data), and multi-channel listener creation.
 
 A shared helper module `tests/common/mod.rs` provides:
 

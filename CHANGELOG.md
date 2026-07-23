@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OnDataReceived` no longer blocks the RDS callback thread: data is
   queued to a per-connection writer thread via a bounded queue. A pipe
   client that stops reading is disconnected once the queue cap (512
-  chunks) is exceeded, and single chunks over 64 KiB are rejected.
+  chunks) is exceeded. A received chunk is forwarded whole regardless of
+  size, matching the DVC contract that places no upper bound on the
+  buffer delivered to `OnDataReceived`.
 - Client reconnects reuse the same claimed pipe instance without the
   stale-read workaround the tokio/mio stack required.
 

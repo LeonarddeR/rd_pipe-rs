@@ -488,11 +488,13 @@ fn stalled_client_disconnected_at_cap() {
 	drop(plugin);
 }
 
-/// Chunks above the transport bound are rejected without touching the pipe;
-/// the channel keeps working afterwards.
+/// A single chunk larger than the pipe buffer is forwarded intact: the DVC
+/// framework places no upper bound on `OnDataReceived` size, and the blocking
+/// pipe write drains fully as the client reads. The channel keeps working
+/// afterwards.
 #[test]
 #[serial]
-fn oversized_chunk_rejected() {
+fn oversized_chunk_forwarded() {
 	let hkcu = common::HkcuOverride::new().expect("override hkcu");
 	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
 
@@ -512,24 +514,24 @@ fn oversized_chunk_rejected() {
 	let client = common::connect_pipe_client("RdPipeTest", addr, Duration::from_secs(5));
 	wait_for_xon(&chan_state);
 
-	let oversized = vec![0x5Au8; 64 * 1024 + 1];
-	let result = unsafe { chan_cb.OnDataReceived(&oversized) };
-	assert!(
-		matches!(
-			result,
-			Err(ref e) if e.code() == windows::Win32::Foundation::E_UNEXPECTED
-		),
-		"expected E_UNEXPECTED for oversized chunk, got {result:?}"
-	);
-
-	// Channel still pumps normally afterwards.
+	// Four times the pipe buffer, so the write spans several buffer fills and
+	// an index-based pattern catches any truncation or reordering.
+	let oversized: Vec<u8> = (0..256 * 1024).map(|i| (i % 256) as u8).collect();
 	unsafe {
-		chan_cb.OnDataReceived(b"still-alive").expect("OnDataReceived after reject");
+		chan_cb.OnDataReceived(&oversized).expect("OnDataReceived for oversized chunk");
 	}
-	let got =
+	let got = common::read_exact_with_timeout(&client, oversized.len(), Duration::from_secs(10))
+		.expect("read oversized chunk");
+	assert_eq!(got, oversized, "oversized chunk was not forwarded intact");
+
+	// Channel still pumps normally after the large write.
+	unsafe {
+		chan_cb.OnDataReceived(b"still-alive").expect("OnDataReceived after oversized");
+	}
+	let tail =
 		common::read_exact_with_timeout(&client, b"still-alive".len(), Duration::from_secs(5))
-			.expect("read after reject");
-	assert_eq!(&got, b"still-alive");
+			.expect("read after oversized");
+	assert_eq!(&tail, b"still-alive");
 
 	unsafe {
 		chan_cb.OnClose().expect("OnClose");

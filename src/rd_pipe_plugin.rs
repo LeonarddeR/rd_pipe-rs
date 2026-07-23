@@ -188,10 +188,6 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
-/// Upper bound for a single `OnDataReceived` chunk; RDS fragments DVC data
-/// far below this. Capped at the pipe buffer size so an accepted chunk never
-/// needs a partial write.
-const MAX_CHUNK_SIZE: usize = PIPE_BUFFER_SIZE as usize;
 /// Chunks queued between the RDS callback thread and the pipe writer thread
 /// before the client is considered stalled.
 const WRITE_QUEUE_CAP: usize = 512;
@@ -537,10 +533,6 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		}
 		if pbuffer.is_null() {
 			return Err(Error::from(E_POINTER));
-		}
-		if cbsize as usize > MAX_CHUNK_SIZE {
-			error!("Received chunk of {} bytes exceeds {}", cbsize, MAX_CHUNK_SIZE);
-			return Err(Error::from(E_UNEXPECTED));
 		}
 		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
 		trace!("Queueing {} received bytes for pipe", chunk.len());
