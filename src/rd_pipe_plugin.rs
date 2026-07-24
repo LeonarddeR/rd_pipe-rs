@@ -570,13 +570,13 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		if pbuffer.is_null() {
 			return Err(Error::from(E_POINTER));
 		}
+		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
+		trace!("Queueing {} received bytes for pipe", cbsize);
 		let mut writer_lock = self.writer_slot.lock();
 		let Some(sender) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
 			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
 		};
-		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
-		trace!("Queueing {} received bytes for pipe", cbsize);
 		match sender.try_send(chunk) {
 			Ok(()) => Ok(()),
 			Err(TrySendError::Full(_)) => {
