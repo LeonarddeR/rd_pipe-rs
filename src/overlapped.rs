@@ -12,7 +12,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
 use windows::Win32::{
 	Foundation::{CloseHandle, ERROR_IO_PENDING, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -66,28 +65,25 @@ pub fn create_event() -> Result<OwnedHandle> {
 }
 
 /// Shutdown signal shared across threads: a manual-reset event that stays
-/// signalled once set, waking every pending overlapped wait. An atomic flag
-/// mirrors the event state so `is_signalled` polls without a kernel wait.
+/// signalled once set, waking every pending overlapped wait.
 #[derive(Debug)]
 pub struct Shutdown {
 	event: OwnedHandle,
-	signalled: AtomicBool,
 }
 
 impl Shutdown {
 	pub fn new() -> Result<Self> {
-		Ok(Self { event: create_event()?, signalled: AtomicBool::new(false) })
+		Ok(Self { event: create_event()? })
 	}
 
 	pub fn signal(&self) {
-		self.signalled.store(true, Ordering::Release);
 		if let Err(e) = unsafe { SetEvent(self.event.raw()) } {
 			error!("Failed to signal shutdown event: {}", e);
 		}
 	}
 
 	pub fn is_signalled(&self) -> bool {
-		self.signalled.load(Ordering::Acquire)
+		self.wait(0)
 	}
 
 	/// Waits up to `ms` for the shutdown event; true if it fired.
@@ -115,9 +111,10 @@ pub enum OverlappedWait {
 
 /// Waits for a pending overlapped operation (its event is
 /// `overlapped.hEvent`) or the shutdown signal, whichever fires first. On
-/// shutdown the operation is cancelled via `CancelIoEx` and reaped with a
-/// blocking `GetOverlappedResult` so the kernel no longer references
-/// `overlapped` or the IO buffer when this returns.
+/// shutdown — and on a failed wait — the operation is cancelled via
+/// `CancelIoEx` and reaped with a blocking `GetOverlappedResult` so the
+/// kernel no longer references `overlapped` or the IO buffer when this
+/// returns.
 ///
 /// # Safety
 /// `overlapped` must reference a pending operation on `handle` whose event
@@ -145,7 +142,16 @@ pub unsafe fn wait_overlapped(
 			}
 			Ok(OverlappedWait::Shutdown)
 		}
-		_ => Err(windows::core::Error::from_thread()),
+		_ => {
+			// Must run before CancelIoEx/GetOverlappedResult clobber the thread error.
+			let e = windows::core::Error::from_thread();
+			unsafe {
+				let _ = CancelIoEx(handle, Some(overlapped));
+				let mut bytes = 0u32;
+				let _ = GetOverlappedResult(handle, overlapped, &mut bytes, true);
+			}
+			Err(e)
+		}
 	}
 }
 
