@@ -28,6 +28,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::Storage::FileSystem::{
 	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
+use windows::Win32::System::Com::{CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage};
 use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::System::Pipes::{
 	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
@@ -403,6 +404,30 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 	Ok(unsafe { OwnedHandle::new(handle) })
 }
 
+/// Keeps the process-wide implicit MTA alive while held, so the pump's
+/// threads stay valid COM callers for their whole lifetime.
+struct MtaGuard(CO_MTA_USAGE_COOKIE);
+
+impl MtaGuard {
+	fn new() -> Option<Self> {
+		match unsafe { CoIncrementMTAUsage() } {
+			Ok(cookie) => Some(Self(cookie)),
+			Err(e) => {
+				error!("CoIncrementMTAUsage failed: {}", e);
+				None
+			}
+		}
+	}
+}
+
+impl Drop for MtaGuard {
+	fn drop(&mut self) {
+		unsafe {
+			let _ = CoDecrementMTAUsage(self.0);
+		}
+	}
+}
+
 /// Accept/read loop for one channel. Runs on a dedicated thread; owns the
 /// pipe instance (shared with the per-connection writer thread) and keeps it
 /// claimed across client reconnects. XOFF is written to the channel at each
@@ -418,6 +443,7 @@ fn run_pipe_pump(
 	shutdown: Arc<Shutdown>,
 	addr: String,
 ) {
+	let _mta = MtaGuard::new();
 	let op_event = match create_event() {
 		Ok(e) => e,
 		Err(e) => {
