@@ -366,8 +366,8 @@ fn pipe_client_can_reconnect_after_disconnect() {
 }
 
 /// A pipe client that stops reading must never block the RDS callback
-/// thread: `OnDataReceived` queues via `try_send` and, once the bounded
-/// queue overflows, the stalled client is disconnected.
+/// thread: `OnDataReceived` queues without blocking and, once the queued
+/// backlog exceeds its budget, disconnects the stalled client.
 #[test]
 #[serial]
 fn stalled_client_disconnected_at_cap() {
@@ -377,7 +377,7 @@ fn stalled_client_disconnected_at_cap() {
 	let client = fx.connect_client_and_wait_for_xon();
 
 	// Flood the channel with max-size chunks. Every call must return
-	// promptly; once the queue cap trips, the plugin disconnects the
+	// promptly; once the backlog budget trips, the plugin disconnects the
 	// stalled client and later calls fail with ERROR_PIPE_NOT_CONNECTED.
 	let chunk = vec![0xA5u8; 64 * 1024];
 	let mut disconnected = false;
