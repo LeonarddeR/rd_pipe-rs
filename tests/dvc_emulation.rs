@@ -422,8 +422,6 @@ fn oversized_chunk_forwarded() {
 	let fx = setup_channel();
 	let client = fx.connect_client_and_wait_for_xon();
 
-	// Four times the pipe buffer, so the write spans several buffer fills and
-	// an index-based pattern catches any truncation or reordering.
 	let oversized: Vec<u8> = (0..256 * 1024).map(|i| (i % 256) as u8).collect();
 	unsafe {
 		fx.chan_cb.OnDataReceived(&oversized).expect("OnDataReceived for oversized chunk");

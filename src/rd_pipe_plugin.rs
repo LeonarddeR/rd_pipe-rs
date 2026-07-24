@@ -375,8 +375,8 @@ impl Drop for RdPipeChannelCallback {
 	}
 }
 
-/// Creates the single named-pipe instance for a channel. The handle stays
-/// open for the channel's lifetime so the pipe name remains claimed.
+/// Creates the single named-pipe instance for a channel; the handle stays
+/// open for the channel's lifetime.
 fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 	trace!("Creating pipe server with address {}", addr);
 	let handle = unsafe {
