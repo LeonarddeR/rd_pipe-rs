@@ -490,6 +490,21 @@ fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	);
 }
 
+/// Releasing the channel callback without `OnClose` (abnormal host
+/// teardown) must still shut the pump down and close the pipe instance.
+#[test]
+#[serial]
+fn dropping_callback_without_onclose_closes_pipe() {
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
+
+	drop(fx.chan_cb);
+
+	let eof = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe after callback release");
+	assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof, "expected EOF, got {eof:?}");
+}
+
 /// Graceful close delivers everything already accepted: chunks queued via
 /// `OnDataReceived` before `OnClose` reach a reading client intact,
 /// followed by end-of-pipe.

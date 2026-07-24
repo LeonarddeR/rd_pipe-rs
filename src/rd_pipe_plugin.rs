@@ -368,6 +368,12 @@ impl RdPipeChannelCallback {
 	}
 }
 
+impl Drop for RdPipeChannelCallback {
+	fn drop(&mut self) {
+		self.shutdown.signal();
+	}
+}
+
 /// Creates the single named-pipe instance for a channel. The handle stays
 /// open for the channel's lifetime so the pipe name remains claimed.
 fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
