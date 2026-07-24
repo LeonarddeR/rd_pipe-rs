@@ -11,7 +11,9 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # github.actor, not the PR author: runs only for events dependabot itself
+    # triggered, not for a push or reopen by anyone else on a dependabot PR.
+    if: github.actor == 'dependabot[bot]'
     steps:
       - name: Dependabot metadata
         id: meta
@@ -19,15 +21,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Approve non-major updates
+      # Once enabled, auto-merge waits for the required status checks, then
+      # squash-merges.
+      - name: Enable auto-merge for non-major updates
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
-        run: gh pr review --approve "$PR_URL"
+        run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
