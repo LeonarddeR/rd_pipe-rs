@@ -158,6 +158,8 @@ use windows::core::implement;
 pub struct FakeChannelState {
 	pub writes: Mutex<Vec<Vec<u8>>>,
 	pub closed: AtomicBool,
+	/// When set, every `Write` fails with `E_FAIL`.
+	pub fail_writes: AtomicBool,
 }
 
 impl FakeChannelState {
@@ -193,6 +195,9 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl for FakeVirt
 		pbuffer: *const u8,
 		_preserved: windows_core::Ref<windows_core::IUnknown>,
 	) -> windows_core::Result<()> {
+		if self.state.fail_writes.load(Ordering::SeqCst) {
+			return Err(windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL));
+		}
 		let buf = unsafe { std::slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
 		self.state.writes.lock().push(buf);
 		Ok(())

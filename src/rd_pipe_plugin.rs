@@ -428,18 +428,27 @@ fn run_pipe_pump(
 		trace!("Pipe client connected");
 
 		let (sender, receiver) = sync_channel(WRITE_QUEUE_CAP);
-		*writer_slot.lock() = Some(sender);
+		{
+			let mut slot = writer_slot.lock();
+			if shutdown.is_signalled() {
+				trace!("Shutdown signalled before writer registration");
+				break;
+			}
+			*slot = Some(sender);
+		}
 		let writer_thread = {
-			let handle = handle.clone();
-			let shutdown = shutdown.clone();
+			let writer_handle = handle.clone();
+			let writer_shutdown = shutdown.clone();
 			match thread::Builder::new()
 				.name(format!("rd_pipe writer {addr}"))
-				.spawn(move || run_pipe_writer(handle, receiver, shutdown))
+				.spawn(move || run_pipe_writer(writer_handle, receiver, writer_shutdown))
 			{
 				Ok(t) => t,
 				Err(e) => {
 					error!("Failed to spawn pipe writer thread: {}", e);
 					writer_slot.lock().take();
+					shutdown.signal();
+					let _ = write_flow_control(&channel, MSG_XOFF);
 					break;
 				}
 			}
@@ -461,6 +470,7 @@ fn run_pipe_pump(
 						Ok(()) => trace!("Wrote {} bytes to channel", n),
 						Err(e) => {
 							error!("Error during write to channel: {}", e);
+							shutdown.signal();
 							break;
 						}
 					}
@@ -512,6 +522,7 @@ fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdo
 		Ok(e) => e,
 		Err(e) => {
 			error!("Can't create writer op event: {}", e);
+			disconnect_pipe(&handle, "writer event failure");
 			return;
 		}
 	};
@@ -524,6 +535,7 @@ fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdo
 				trace!("Wrote {} bytes to pipe", n);
 				if (n as usize) != chunk.len() {
 					error!("Partial pipe write: {} of {} bytes", n, chunk.len());
+					disconnect_pipe(&handle, "partial write");
 					break;
 				}
 			}
@@ -593,8 +605,10 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 
 	#[instrument]
 	fn OnClose(&self) -> Result<()> {
-		self.writer_slot.lock().take();
+		// Signal first: the pump's registration recheck observes the signal
+		// under the same lock this take contends on.
 		self.shutdown.signal();
+		self.writer_slot.lock().take();
 		Ok(())
 	}
 }

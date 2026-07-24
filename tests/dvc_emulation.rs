@@ -490,6 +490,27 @@ fn on_close_with_queued_data_discards_and_disconnects() {
 	);
 }
 
+/// A channel whose `Write` starts failing (transport died before `OnClose`)
+/// must tear down like a close: the connected client observes a graceful
+/// end-of-pipe, not a forced disconnect.
+#[test]
+#[serial]
+fn channel_write_failure_closes_pipe_gracefully() {
+	let fx = setup_channel();
+	let mut client = fx.connect_client_and_wait_for_xon();
+
+	fx.chan_state.fail_writes.store(true, std::sync::atomic::Ordering::SeqCst);
+	client.write_all(b"boom").expect("pipe write");
+	client.flush().expect("pipe flush");
+
+	// Graceful instance close = EOF (read_exact reports UnexpectedEof);
+	// a forced DisconnectNamedPipe surfaces as raw OS error 233.
+	let err = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe");
+	assert_ne!(err.raw_os_error(), Some(233), "client saw a forced disconnect: {err:?}");
+	assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "expected graceful EOF, got {err:?}");
+}
+
 /// Regression test for issue #57: `OnClose` must terminate the reader
 /// while the client is still connected and any subsequent `OnDataReceived`
 /// must fail with `ERROR_PIPE_NOT_CONNECTED`. `OnClose` synchronously takes
