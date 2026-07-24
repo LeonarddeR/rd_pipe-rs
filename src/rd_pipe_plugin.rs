@@ -16,8 +16,8 @@ use core::slice;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Weak};
 use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
 use windows::Win32::Foundation::{
@@ -292,32 +292,17 @@ fn disconnect_pipe(handle: &OwnedHandle, context: &str) {
 	}
 }
 
-/// Per-channel pipe state shared between the COM callback and the pump and
-/// writer threads: the single pipe instance and the sender slot feeding the
-/// writer thread of the currently connected client.
-#[derive(Debug)]
-struct PipeConnection {
-	handle: OwnedHandle,
-	writer_slot: Mutex<Option<SyncSender<Vec<u8>>>>,
-}
-
-impl PipeConnection {
-	fn new(handle: OwnedHandle) -> Self {
-		Self { handle, writer_slot: Mutex::new(None) }
-	}
-
-	/// Clears the writer slot and disconnects the pipe instance; the
-	/// disconnect also aborts any parked overlapped op on the handle.
-	fn sever(&self, context: &str) {
-		self.writer_slot.lock().take();
-		disconnect_pipe(&self.handle, context);
-	}
-}
-
+/// COM channel callback. The pipe instance is owned by the pump and writer
+/// threads (via `Arc<OwnedHandle>`), not held here, so the instance closes as
+/// soon as those threads exit — giving a connected client a graceful
+/// end-of-pipe. The callback keeps only the writer queue slot (for
+/// `OnDataReceived`), a `Weak` handle (to disconnect a stalled client without
+/// extending the instance's lifetime), and the shutdown signal (`OnClose`).
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-	pipe: Arc<PipeConnection>,
+	writer_slot: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
+	pipe_handle: Weak<OwnedHandle>,
 	shutdown: Arc<Shutdown>,
 }
 
@@ -333,22 +318,24 @@ impl RdPipeChannelCallback {
 			e
 		})?;
 		let sddl = build_pipe_sddl(&login_sid);
-		let pipe = Arc::new(PipeConnection::new(create_pipe_instance(&addr, &sddl)?));
+		let handle = Arc::new(create_pipe_instance(&addr, &sddl)?);
+		let pipe_handle = Arc::downgrade(&handle);
+		let writer_slot = Arc::new(Mutex::new(None));
 		let shutdown = Arc::new(Shutdown::new()?);
 
 		{
-			let pipe = pipe.clone();
+			let writer_slot = writer_slot.clone();
 			let shutdown = shutdown.clone();
 			thread::Builder::new()
 				.name(format!("rd_pipe pump {addr}"))
-				.spawn(move || run_pipe_pump(pipe, channel_agile, shutdown, addr))
+				.spawn(move || run_pipe_pump(handle, writer_slot, channel_agile, shutdown, addr))
 				.map_err(|e| {
 					error!("Failed to spawn pipe pump thread: {}", e);
 					Error::from(E_UNEXPECTED)
 				})?;
 		}
 
-		Ok(Self { pipe, shutdown })
+		Ok(Self { writer_slot, pipe_handle, shutdown })
 	}
 }
 
@@ -381,11 +368,17 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 	Ok(unsafe { OwnedHandle::new(handle) })
 }
 
-/// Accept/read loop for one channel. Runs on a dedicated thread; keeps the
-/// single pipe instance claimed across client reconnects.
-#[instrument(skip(pipe, channel_agile, shutdown))]
+/// Accept/read loop for one channel. Runs on a dedicated thread; owns the
+/// pipe instance (shared with the per-connection writer thread) and keeps it
+/// claimed across client reconnects. XOFF is written to the channel at each
+/// disconnect while the channel is still live. On channel close (shutdown)
+/// the pump returns without disconnecting: the last handle references drop,
+/// the instance closes, and a still-connected client observes a graceful
+/// end-of-pipe rather than a forced disconnect.
+#[instrument(skip(handle, writer_slot, channel_agile, shutdown))]
 fn run_pipe_pump(
-	pipe: Arc<PipeConnection>,
+	handle: Arc<OwnedHandle>,
+	writer_slot: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
 	channel_agile: AgileReference<IWTSVirtualChannel>,
 	shutdown: Arc<Shutdown>,
 	addr: String,
@@ -407,7 +400,7 @@ fn run_pipe_pump(
 	let mut buf = vec![0u8; PIPE_BUFFER_SIZE as usize];
 	while !shutdown.is_signalled() {
 		trace!("Initiate connection to pipe client");
-		match connect_pipe(&pipe.handle, &shutdown, &op_event) {
+		match connect_pipe(&handle, &shutdown, &op_event) {
 			PipeIo::Done(_) => {}
 			PipeIo::Shutdown => {
 				trace!("Shutdown signalled while awaiting pipe client connection");
@@ -415,7 +408,7 @@ fn run_pipe_pump(
 			}
 			PipeIo::Disconnected(e) | PipeIo::Failed(e) => {
 				error!("Error connecting to pipe client: {}", e);
-				disconnect_pipe(&pipe.handle, "connect retry");
+				disconnect_pipe(&handle, "connect retry");
 				if shutdown.wait(100) {
 					trace!("Shutdown signalled during pipe reconnect retry");
 					break;
@@ -426,18 +419,18 @@ fn run_pipe_pump(
 		trace!("Pipe client connected");
 
 		let (sender, receiver) = sync_channel(WRITE_QUEUE_CAP);
-		*pipe.writer_slot.lock() = Some(sender);
+		*writer_slot.lock() = Some(sender);
 		let writer_thread = {
-			let writer_pipe = pipe.clone();
-			let writer_shutdown = shutdown.clone();
+			let handle = handle.clone();
+			let shutdown = shutdown.clone();
 			match thread::Builder::new()
 				.name(format!("rd_pipe writer {addr}"))
-				.spawn(move || run_pipe_writer(writer_pipe, receiver, writer_shutdown))
+				.spawn(move || run_pipe_writer(handle, receiver, shutdown))
 			{
 				Ok(t) => t,
 				Err(e) => {
 					error!("Failed to spawn pipe writer thread: {}", e);
-					pipe.sever("writer spawn failure");
+					writer_slot.lock().take();
 					break;
 				}
 			}
@@ -453,7 +446,7 @@ fn run_pipe_pump(
 
 		trace!("Initiating pipe_reader loop");
 		while !shutdown.is_signalled() {
-			match read_pipe(&pipe.handle, &shutdown, &op_event, &mut buf) {
+			match read_pipe(&handle, &shutdown, &op_event, &mut buf) {
 				PipeIo::Done(0) => {
 					trace!("Zero-byte read from pipe");
 				}
@@ -469,24 +462,46 @@ fn run_pipe_pump(
 				}
 				PipeIo::Shutdown => {
 					trace!("Shutdown signalled inside reader loop");
+					match channel_write(&channel, &[MSG_XOFF]) {
+						Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
+						Err(e) => error!("Error writing XOFF on shutdown: {}", e),
+					}
 					break;
 				}
 				PipeIo::Disconnected(e) => {
 					info!("Pipe closed by client: {}", e);
+					match channel_write(&channel, &[MSG_XOFF]) {
+						Ok(()) => trace!("Wrote XOFF to channel"),
+						Err(e) => error!("Error writing XOFF to channel: {}", e),
+					}
 					break;
 				}
 				PipeIo::Failed(e) => {
 					error!("Error reading from pipe client: {}", e);
+					match channel_write(&channel, &[MSG_XOFF]) {
+						Ok(()) => trace!("Wrote XOFF to channel"),
+						Err(e) => error!("Error writing XOFF to channel: {}", e),
+					}
 					break;
 				}
 			}
 		}
-		trace!("End of pipe_reader loop, reclaiming pipe instance");
-		match channel_write(&channel, &[MSG_XOFF]) {
-			Ok(()) => trace!("Wrote XOFF to channel"),
-			Err(e) => error!("Error writing XOFF to channel: {}", e),
+
+		let graceful = shutdown.is_signalled();
+		writer_slot.lock().take();
+		if graceful {
+			// Channel closing: leave the instance alone so it closes when the
+			// pump and writer threads drop it, giving the client a graceful
+			// end-of-pipe instead of a forced disconnect.
+			trace!("End of pipe_reader loop, closing pipe instance");
+			if let Err(e) = writer_thread.join() {
+				error!("Pipe writer thread panicked: {:?}", e);
+			}
+			break;
 		}
-		pipe.sever("teardown");
+		// Client disconnected: reset the instance and accept the next client.
+		trace!("End of pipe_reader loop, reclaiming pipe instance");
+		disconnect_pipe(&handle, "teardown");
 		if let Err(e) = writer_thread.join() {
 			error!("Pipe writer thread panicked: {:?}", e);
 			break;
@@ -497,11 +512,7 @@ fn run_pipe_pump(
 
 /// Drains queued channel data into the pipe. Exits when the sender is
 /// dropped (queue drained first) or on shutdown/write failure.
-fn run_pipe_writer(
-	pipe: Arc<PipeConnection>,
-	receiver: Receiver<Vec<u8>>,
-	shutdown: Arc<Shutdown>,
-) {
+fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdown: Arc<Shutdown>) {
 	let op_event = match create_event() {
 		Ok(e) => e,
 		Err(e) => {
@@ -513,7 +524,7 @@ fn run_pipe_writer(
 		if shutdown.is_signalled() {
 			break;
 		}
-		match write_pipe(&pipe.handle, &shutdown, &op_event, &chunk) {
+		match write_pipe(&handle, &shutdown, &op_event, &chunk) {
 			PipeIo::Done(n) => {
 				trace!("Wrote {} bytes to pipe", n);
 				if (n as usize) != chunk.len() {
@@ -531,7 +542,7 @@ fn run_pipe_writer(
 			}
 			PipeIo::Failed(e) => {
 				error!("Error writing to pipe: {}", e);
-				disconnect_pipe(&pipe.handle, "write failure");
+				disconnect_pipe(&handle, "write failure");
 				break;
 			}
 		}
@@ -542,7 +553,7 @@ fn run_pipe_writer(
 impl fmt::Debug for RdPipeChannelCallback_Impl {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.debug_struct("RdPipeChannelCallback_Impl")
-			.field("has_pipe_writer", &self.pipe.writer_slot.try_lock().map(|g| g.is_some()))
+			.field("has_pipe_writer", &self.writer_slot.try_lock().map(|g| g.is_some()))
 			.field("shutdown_signalled", &self.shutdown.is_signalled())
 			.finish()
 	}
@@ -559,7 +570,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		if pbuffer.is_null() {
 			return Err(Error::from(E_POINTER));
 		}
-		let mut writer_lock = self.pipe.writer_slot.lock();
+		let mut writer_lock = self.writer_slot.lock();
 		let Some(sender) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
 			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
@@ -570,8 +581,11 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			Ok(()) => Ok(()),
 			Err(TrySendError::Full(_)) => {
 				warn!("Pipe write queue full; disconnecting stalled client");
+				writer_lock.take();
 				drop(writer_lock);
-				self.pipe.sever("stalled client");
+				if let Some(handle) = self.pipe_handle.upgrade() {
+					disconnect_pipe(&handle, "stalled client");
+				}
 				Ok(())
 			}
 			Err(TrySendError::Disconnected(_)) => {
@@ -584,7 +598,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 
 	#[instrument]
 	fn OnClose(&self) -> Result<()> {
-		self.pipe.writer_slot.lock().take();
+		self.writer_slot.lock().take();
 		self.shutdown.signal();
 		Ok(())
 	}

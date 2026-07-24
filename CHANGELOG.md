@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffer delivered to `OnDataReceived`.
 - Client reconnects reuse the same claimed pipe instance without the
   stale-read workaround the tokio/mio stack required.
+- `OnClose` now closes the pipe instance gracefully instead of forcing
+  `DisconnectNamedPipe`: the instance is owned by the pump and writer
+  threads (the callback holds only a `Weak` handle), so it closes as they
+  exit and a connected client observes `ERROR_BROKEN_PIPE` rather than
+  `ERROR_PIPE_NOT_CONNECTED`. This restores the pre-`dropTokio` teardown
+  behavior the RDAccess client relies on and stops a channel-close from
+  being logged as an error on the consumer side.
 
 ## [0.8.0]
 
