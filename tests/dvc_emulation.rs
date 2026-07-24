@@ -490,6 +490,29 @@ fn on_close_with_queued_data_discards_and_disconnects() {
 	);
 }
 
+/// Many small chunks to a non-reading client: the stall gate is a byte
+/// budget, so tiny chunks far below it must never trip a disconnect no
+/// matter their count.
+#[test]
+#[serial]
+fn many_small_chunks_below_budget_not_disconnected() {
+	let fx = setup_channel();
+
+	// Client connects and never reads: ~655 chunks land in the pipe buffer,
+	// the rest queue (~134 KiB, far under the byte budget).
+	let _client = fx.connect_client_and_wait_for_xon();
+
+	let chunk = [0x5Au8; 100];
+	for i in 0..2000 {
+		let result = unsafe { fx.chan_cb.OnDataReceived(&chunk) };
+		assert!(result.is_ok(), "send {i} tripped the stall gate: {result:?}");
+	}
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+}
+
 /// A channel whose `Write` starts failing (transport died before `OnClose`)
 /// must tear down like a close: the connected client observes a graceful
 /// end-of-pipe, not a forced disconnect.

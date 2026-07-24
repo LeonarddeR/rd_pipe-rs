@@ -16,7 +16,8 @@ use core::slice;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Weak};
 use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -188,9 +189,25 @@ impl IWTSListenerCallback_Impl for RdPipeListenerCallback_Impl {
 
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\RDPipe";
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
-/// Chunks queued between the RDS callback thread and the pipe writer thread
-/// before the client is considered stalled.
-const WRITE_QUEUE_CAP: usize = 512;
+/// Queued channel→pipe backlog (bytes) at which the client is considered
+/// stalled. Checked before admission, so a single chunk of any size still
+/// passes while the backlog is under budget; the in-flight chunk is not
+/// counted.
+const WRITE_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Backstop on queued chunk count: bounds the per-chunk allocation overhead
+/// the byte counter can't see.
+const WRITE_QUEUE_MAX_CHUNKS: usize = 65536;
+
+/// Per-connection writer queue handle held in the callback's slot. The
+/// counters track queued (not in-flight) payload; they die with the
+/// connection. `sender` must remain the only sender: dropping the slot is
+/// what ends the writer's `recv` loop.
+#[derive(Debug)]
+struct WriterQueue {
+	sender: Sender<Vec<u8>>,
+	queued_bytes: Arc<AtomicUsize>,
+	queued_chunks: Arc<AtomicUsize>,
+}
 
 fn channel_write(channel: &IWTSVirtualChannel, data: &[u8]) -> Result<()> {
 	unsafe { channel.Write(data, None) }
@@ -310,7 +327,7 @@ fn disconnect_pipe(handle: &OwnedHandle, context: &str) {
 #[derive(Debug)]
 #[implement(IWTSVirtualChannelCallback)]
 pub struct RdPipeChannelCallback {
-	writer_slot: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
+	writer_slot: Arc<Mutex<Option<WriterQueue>>>,
 	pipe_handle: Weak<OwnedHandle>,
 	shutdown: Arc<Shutdown>,
 }
@@ -387,7 +404,7 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 #[instrument(skip(handle, writer_slot, channel_agile, shutdown))]
 fn run_pipe_pump(
 	handle: Arc<OwnedHandle>,
-	writer_slot: Arc<Mutex<Option<SyncSender<Vec<u8>>>>>,
+	writer_slot: Arc<Mutex<Option<WriterQueue>>>,
 	channel_agile: AgileReference<IWTSVirtualChannel>,
 	shutdown: Arc<Shutdown>,
 	addr: String,
@@ -427,22 +444,33 @@ fn run_pipe_pump(
 		}
 		trace!("Pipe client connected");
 
-		let (sender, receiver) = sync_channel(WRITE_QUEUE_CAP);
+		let (sender, receiver) = mpsc::channel();
+		let queued_bytes = Arc::new(AtomicUsize::new(0));
+		let queued_chunks = Arc::new(AtomicUsize::new(0));
 		{
 			let mut slot = writer_slot.lock();
 			if shutdown.is_signalled() {
 				trace!("Shutdown signalled before writer registration");
 				break;
 			}
-			*slot = Some(sender);
+			*slot = Some(WriterQueue {
+				sender,
+				queued_bytes: queued_bytes.clone(),
+				queued_chunks: queued_chunks.clone(),
+			});
 		}
 		let writer_thread = {
 			let writer_handle = handle.clone();
 			let writer_shutdown = shutdown.clone();
-			match thread::Builder::new()
-				.name(format!("rd_pipe writer {addr}"))
-				.spawn(move || run_pipe_writer(writer_handle, receiver, writer_shutdown))
-			{
+			match thread::Builder::new().name(format!("rd_pipe writer {addr}")).spawn(move || {
+				run_pipe_writer(
+					writer_handle,
+					receiver,
+					queued_bytes,
+					queued_chunks,
+					writer_shutdown,
+				)
+			}) {
 				Ok(t) => t,
 				Err(e) => {
 					error!("Failed to spawn pipe writer thread: {}", e);
@@ -517,7 +545,13 @@ fn run_pipe_pump(
 
 /// Drains queued channel data into the pipe. Exits when the sender is
 /// dropped (queue drained first) or on shutdown/write failure.
-fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdown: Arc<Shutdown>) {
+fn run_pipe_writer(
+	handle: Arc<OwnedHandle>,
+	receiver: Receiver<Vec<u8>>,
+	queued_bytes: Arc<AtomicUsize>,
+	queued_chunks: Arc<AtomicUsize>,
+	shutdown: Arc<Shutdown>,
+) {
 	let op_event = match create_event() {
 		Ok(e) => e,
 		Err(e) => {
@@ -527,6 +561,8 @@ fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdo
 		}
 	};
 	while let Ok(chunk) = receiver.recv() {
+		queued_bytes.fetch_sub(chunk.len(), Ordering::Relaxed);
+		queued_chunks.fetch_sub(1, Ordering::Relaxed);
 		if shutdown.is_signalled() {
 			break;
 		}
@@ -580,22 +616,31 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		let chunk = unsafe { slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
 		trace!("Queueing {} received bytes for pipe", cbsize);
 		let mut writer_lock = self.writer_slot.lock();
-		let Some(sender) = writer_lock.as_ref() else {
+		let Some(queue) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
 			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
 		};
-		match sender.try_send(chunk) {
-			Ok(()) => Ok(()),
-			Err(TrySendError::Full(_)) => {
-				warn!("Pipe write queue full; disconnecting stalled client");
-				writer_lock.take();
-				drop(writer_lock);
-				if let Some(handle) = self.pipe_handle.upgrade() {
-					disconnect_pipe(&handle, "stalled client");
-				}
-				Ok(())
+		let backlog_bytes = queue.queued_bytes.load(Ordering::Relaxed);
+		let backlog_chunks = queue.queued_chunks.load(Ordering::Relaxed);
+		if backlog_bytes >= WRITE_QUEUE_MAX_BYTES || backlog_chunks >= WRITE_QUEUE_MAX_CHUNKS {
+			warn!(
+				"Pipe write backlog over budget ({} bytes, {} chunks); disconnecting stalled client",
+				backlog_bytes, backlog_chunks
+			);
+			writer_lock.take();
+			// The disconnect must stay under the lock: the pump's teardown
+			// take orders the next accept after it.
+			if let Some(handle) = self.pipe_handle.upgrade() {
+				disconnect_pipe(&handle, "stalled client");
 			}
-			Err(TrySendError::Disconnected(_)) => {
+			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+		}
+		// Increments must precede the send: the writer decrements after recv.
+		queue.queued_bytes.fetch_add(chunk.len(), Ordering::Relaxed);
+		queue.queued_chunks.fetch_add(1, Ordering::Relaxed);
+		match queue.sender.send(chunk) {
+			Ok(()) => Ok(()),
+			Err(_) => {
 				debug!("Pipe writer gone while queueing data");
 				writer_lock.take();
 				Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
