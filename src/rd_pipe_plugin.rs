@@ -197,6 +197,9 @@ const WRITE_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Backstop on queued chunk count: bounds the per-chunk allocation overhead
 /// the byte counter can't see.
 const WRITE_QUEUE_MAX_CHUNKS: usize = 65536;
+/// How long a graceful close waits for the writer to drain to a connected
+/// client before the in-flight write is cancelled.
+const DRAIN_TIMEOUT_MS: u32 = 2000;
 
 /// Per-connection writer queue handle held in the callback's slot. The
 /// counters track queued (not in-flight) payload; they die with the
@@ -444,6 +447,15 @@ fn run_pipe_pump(
 		}
 		trace!("Pipe client connected");
 
+		let (writer_kill, writer_done) = match (Shutdown::new(), Shutdown::new()) {
+			(Ok(k), Ok(d)) => (Arc::new(k), Arc::new(d)),
+			(Err(e), _) | (_, Err(e)) => {
+				error!("Can't create writer control events: {}", e);
+				shutdown.signal();
+				let _ = write_flow_control(&channel, MSG_XOFF);
+				break;
+			}
+		};
 		let (sender, receiver) = mpsc::channel();
 		let queued_bytes = Arc::new(AtomicUsize::new(0));
 		let queued_chunks = Arc::new(AtomicUsize::new(0));
@@ -461,15 +473,10 @@ fn run_pipe_pump(
 		}
 		let writer_thread = {
 			let writer_handle = handle.clone();
-			let writer_shutdown = shutdown.clone();
+			let kill = writer_kill.clone();
+			let done = writer_done.clone();
 			match thread::Builder::new().name(format!("rd_pipe writer {addr}")).spawn(move || {
-				run_pipe_writer(
-					writer_handle,
-					receiver,
-					queued_bytes,
-					queued_chunks,
-					writer_shutdown,
-				)
+				run_pipe_writer(writer_handle, receiver, queued_bytes, queued_chunks, kill, done)
 			}) {
 				Ok(t) => t,
 				Err(e) => {
@@ -521,12 +528,15 @@ fn run_pipe_pump(
 		}
 
 		let graceful = shutdown.is_signalled();
+		// The slot holds the only sender; taking it here, before any wait on
+		// the writer, is what lets the writer's recv loop end.
 		writer_slot.lock().take();
 		if graceful {
-			// Channel closing: leave the instance alone so it closes when the
-			// pump and writer threads drop it, giving the client a graceful
-			// end-of-pipe instead of a forced disconnect.
-			trace!("End of pipe_reader loop, closing pipe instance");
+			trace!("End of pipe_reader loop, draining writer");
+			if !writer_done.wait(DRAIN_TIMEOUT_MS) {
+				trace!("Drain timeout; cancelling in-flight write");
+				writer_kill.signal();
+			}
 			if let Err(e) = writer_thread.join() {
 				error!("Pipe writer thread panicked: {:?}", e);
 			}
@@ -543,15 +553,27 @@ fn run_pipe_pump(
 	trace!("Pipe pump for {} exiting", addr);
 }
 
-/// Drains queued channel data into the pipe. Exits when the sender is
-/// dropped (queue drained first) or on shutdown/write failure.
+/// Signals a `Shutdown` when dropped; covers panic and early-return exits.
+struct SignalOnDrop(Arc<Shutdown>);
+
+impl Drop for SignalOnDrop {
+	fn drop(&mut self) {
+		self.0.signal();
+	}
+}
+
+/// Drains queued channel data into the pipe until the sender is dropped or
+/// a write fails; `kill` cancels an in-flight write, `done` is signalled on
+/// every exit.
 fn run_pipe_writer(
 	handle: Arc<OwnedHandle>,
 	receiver: Receiver<Vec<u8>>,
 	queued_bytes: Arc<AtomicUsize>,
 	queued_chunks: Arc<AtomicUsize>,
-	shutdown: Arc<Shutdown>,
+	kill: Arc<Shutdown>,
+	done: Arc<Shutdown>,
 ) {
+	let _done = SignalOnDrop(done);
 	let op_event = match create_event() {
 		Ok(e) => e,
 		Err(e) => {
@@ -563,10 +585,7 @@ fn run_pipe_writer(
 	while let Ok(chunk) = receiver.recv() {
 		queued_bytes.fetch_sub(chunk.len(), Ordering::Relaxed);
 		queued_chunks.fetch_sub(1, Ordering::Relaxed);
-		if shutdown.is_signalled() {
-			break;
-		}
-		match write_pipe(&handle, &shutdown, &op_event, &chunk) {
+		match write_pipe(&handle, &kill, &op_event, &chunk) {
 			PipeIo::Done(n) => {
 				trace!("Wrote {} bytes to pipe", n);
 				if (n as usize) != chunk.len() {
@@ -576,7 +595,7 @@ fn run_pipe_writer(
 				}
 			}
 			PipeIo::Shutdown => {
-				trace!("Shutdown signalled inside writer loop");
+				trace!("Writer kill signalled inside writer loop");
 				break;
 			}
 			PipeIo::Failed(e) => {

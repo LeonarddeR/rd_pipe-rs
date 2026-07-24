@@ -446,12 +446,12 @@ fn oversized_chunk_forwarded() {
 	}
 }
 
-/// Teardown discards queued writer data rather than draining it: `OnClose`
-/// with unwritten chunks queued to a non-reading client severs the
-/// connection promptly instead of hanging on the parked writer.
+/// Teardown with a non-reading client: `OnClose` drains for up to the
+/// drain timeout, then the in-flight write is cancelled, the writer exits
+/// and the instance closes.
 #[test]
 #[serial]
-fn on_close_with_queued_data_discards_and_disconnects() {
+fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	let fx = setup_channel();
 
 	// Client connects and never reads.
@@ -471,12 +471,12 @@ fn on_close_with_queued_data_discards_and_disconnects() {
 		fx.chan_cb.OnClose().expect("OnClose");
 	}
 
-	// Shutdown must cut the parked writer off and disconnect the instance;
-	// the client observes that as failing writes. A hang in teardown would
-	// leave the connection alive and trip this timeout.
+	// After the drain timeout the parked writer is killed and the instance
+	// closes; the client observes that as failing writes. A hang in
+	// teardown would leave the connection alive and trip this timeout.
 	assert!(
-		wait_until(Duration::from_secs(5), || client.write(b"x").is_err()),
-		"pipe never disconnected after OnClose with queued data"
+		wait_until(Duration::from_secs(10), || client.write(b"x").is_err()),
+		"pipe never closed after OnClose with a non-reading client"
 	);
 
 	// The writer slot is gone as well.
@@ -488,6 +488,38 @@ fn on_close_with_queued_data_discards_and_disconnects() {
 		),
 		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {r:?}"
 	);
+}
+
+/// Graceful close delivers everything already accepted: chunks queued via
+/// `OnDataReceived` before `OnClose` reach a reading client intact,
+/// followed by end-of-pipe.
+#[test]
+#[serial]
+fn on_close_drains_queued_data_to_reading_client() {
+	let fx = setup_channel();
+
+	// No reads yet: the first chunk fills the pipe buffer, the rest queue.
+	let client = fx.connect_client_and_wait_for_xon();
+
+	let total = 3 * 64 * 1024;
+	let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+	for part in payload.chunks(64 * 1024) {
+		unsafe {
+			fx.chan_cb.OnDataReceived(part).expect("OnDataReceived");
+		}
+	}
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+
+	let got = common::read_exact_with_timeout(&client, total, Duration::from_secs(5))
+		.expect("read of drained data");
+	assert_eq!(got, payload, "queued data was not drained intact");
+
+	let eof = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe after drain");
+	assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof, "expected EOF, got {eof:?}");
 }
 
 /// Many small chunks to a non-reading client: the stall gate is a byte
