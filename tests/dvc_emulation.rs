@@ -4,6 +4,12 @@
 mod common;
 
 use serial_test::serial;
+use std::io::Write;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use windows::Win32::System::RemoteDesktop::{
+	IWTSPlugin, IWTSVirtualChannel, IWTSVirtualChannelCallback,
+};
 
 #[test]
 #[serial]
@@ -59,9 +65,51 @@ fn get_listener_cb(
 		.clone()
 }
 
-#[test]
-#[serial]
-fn new_channel_connection_opens_named_pipe() {
+/// Poll `pred` every 25 ms until it returns true or `deadline` elapses.
+fn wait_until(deadline: Duration, mut pred: impl FnMut() -> bool) -> bool {
+	let end = Instant::now() + deadline;
+	loop {
+		if pred() {
+			return true;
+		}
+		if Instant::now() >= end {
+			return false;
+		}
+		std::thread::sleep(Duration::from_millis(25));
+	}
+}
+
+/// Wait for the plugin's first channel write after a client connects (XON),
+/// which also means the pipe writer is registered.
+fn wait_for_xon(chan_state: &common::FakeChannelState) {
+	assert!(
+		wait_until(Duration::from_secs(5), || !chan_state.snapshot_writes().is_empty()),
+		"timed out waiting for XON"
+	);
+}
+
+/// Wait for XOFF (0x13) to appear among the channel writes.
+fn wait_for_xoff(chan_state: &common::FakeChannelState) {
+	assert!(
+		wait_until(Duration::from_secs(5), || chan_state.flat_writes().contains(&0x13u8)),
+		"XOFF never written; got {:?}",
+		chan_state.flat_writes()
+	);
+}
+
+/// Everything the single-channel lifecycle tests share: registry override,
+/// loaded plugin, an initialized "RdPipeTest" channel and its callback.
+/// Fields drop in declaration order: plugin first, registry override last.
+struct ChannelFixture {
+	_plugin: IWTSPlugin,
+	chan_cb: IWTSVirtualChannelCallback,
+	chan_state: Arc<common::FakeChannelState>,
+	_channel: IWTSVirtualChannel,
+	addr: usize,
+	_hkcu: common::HkcuOverride,
+}
+
+fn setup_channel() -> ChannelFixture {
 	let hkcu = common::HkcuOverride::new().expect("override hkcu");
 	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
 
@@ -74,187 +122,104 @@ fn new_channel_connection_opens_named_pipe() {
 	}
 
 	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
+	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
 	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-
 	let addr = common::channel_addr(&channel_iface);
-	let _client = common::block_on(common::connect_pipe_client(
-		"RdPipeTest",
+
+	ChannelFixture {
+		_plugin: plugin,
+		chan_cb,
+		chan_state,
+		_channel: channel_iface,
 		addr,
-		std::time::Duration::from_secs(5),
-	));
+		_hkcu: hkcu,
+	}
+}
+
+impl ChannelFixture {
+	/// Connects a pipe client and returns it once the plugin has written XON.
+	fn connect_client_and_wait_for_xon(&self) -> std::fs::File {
+		let client = common::connect_pipe_client("RdPipeTest", self.addr, Duration::from_secs(5));
+		wait_for_xon(&self.chan_state);
+		client
+	}
+}
+
+#[test]
+#[serial]
+fn new_channel_connection_opens_named_pipe() {
+	let fx = setup_channel();
+	let _client = common::connect_pipe_client("RdPipeTest", fx.addr, Duration::from_secs(5));
 
 	unsafe {
-		chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
-	drop(plugin);
 }
 
 #[test]
 #[serial]
 fn channel_to_pipe_round_trip() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
-
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+	// Push data via OnDataReceived -> plugin writes to pipe -> client reads.
+	let payload = b"world";
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
+		fx.chan_cb.OnDataReceived(payload).expect("OnDataReceived");
 	}
 
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		use tokio::io::AsyncReadExt;
-
-		let mut client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for XON so the plugin's pipe writer half is registered.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-		assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
-
-		// Push data via OnDataReceived -> plugin writes to pipe -> client reads.
-		let payload = b"world";
-		unsafe {
-			chan_cb.OnDataReceived(payload).expect("OnDataReceived");
-		}
-
-		let mut got = [0u8; 5];
-		tokio::time::timeout(std::time::Duration::from_secs(5), client.read_exact(&mut got))
-			.await
-			.expect("read timeout")
-			.expect("read");
-		assert_eq!(&got, b"world");
-	});
+	let got = common::read_exact_with_timeout(&client, payload.len(), Duration::from_secs(5))
+		.expect("read");
+	assert_eq!(&got, b"world");
 
 	unsafe {
-		chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
-	drop(plugin);
 }
 
 #[test]
 #[serial]
 fn pipe_close_writes_xoff_to_channel() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
-
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
-	}
-
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		let client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for XON.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-		assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
-
-		// Drop client -> plugin reads 0 bytes -> writes XOFF (0x13).
-		drop(client);
-
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		loop {
-			let flat = chan_state.flat_writes();
-			if flat.contains(&0x13u8) {
-				break;
-			}
-			if std::time::Instant::now() >= deadline {
-				panic!("XOFF never written; got {flat:?}");
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-	});
+	// Drop client -> plugin read fails -> writes XOFF (0x13).
+	drop(client);
+	wait_for_xoff(&fx.chan_state);
 
 	unsafe {
-		chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
-	drop(plugin);
 }
 
 #[test]
 #[serial]
 fn pipe_to_channel_round_trip() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let mut client = fx.connect_client_and_wait_for_xon();
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
+	let first_writes = fx.chan_state.snapshot_writes();
+	assert_eq!(first_writes[0], vec![0x11u8], "first write must be XON");
 
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
-	}
+	// Write payload to pipe; assert it arrives on the channel.
+	client.write_all(b"hello").expect("pipe write");
+	client.flush().expect("pipe flush");
 
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		use tokio::io::AsyncWriteExt;
-
-		let mut client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for plugin to write XON (0x11).
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-		let first_writes = chan_state.snapshot_writes();
-		assert!(!first_writes.is_empty(), "timed out waiting for XON");
-		assert_eq!(first_writes[0], vec![0x11u8], "first write must be XON");
-
-		// Write payload to pipe; assert it arrives on the channel.
-		client.write_all(b"hello").await.expect("pipe write");
-		client.flush().await.expect("pipe flush");
-
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		loop {
-			let flat = chan_state.flat_writes();
+	assert!(
+		wait_until(Duration::from_secs(5), || {
+			let flat = fx.chan_state.flat_writes();
 			// flat[0] is XON; rest should accumulate "hello".
-			if flat.len() > b"hello".len() {
-				assert_eq!(&flat[1..1 + b"hello".len()], b"hello");
-				break;
-			}
-			if std::time::Instant::now() >= deadline {
-				panic!("payload never arrived on channel; got {flat:?}");
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-	});
+			flat.len() > b"hello".len() && &flat[1..1 + b"hello".len()] == b"hello"
+		}),
+		"payload never arrived on channel; got {:?}",
+		fx.chan_state.flat_writes()
+	);
 
 	unsafe {
-		chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
-	drop(plugin);
 }
+
 #[test]
 #[serial]
 fn initialize_with_empty_channels_returns_e_unexpected() {
@@ -287,70 +252,33 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
 #[test]
 #[serial]
 fn on_close_releases_pipe_writer() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let client = common::connect_pipe_client("RdPipeTest", fx.addr, Duration::from_secs(5));
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
+	// Drop client so the plugin's reader observes the disconnect; this is the
+	// path the plugin's writer release uses (end-of-reader-loop clears the slot).
+	drop(client);
 
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+	// Call OnClose -> plugin signals shutdown and releases the writer slot.
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
 
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, _chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		let client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Drop client so plugin's reader hits EOF; this is the path the
-		// plugin's writer release uses (end-of-reader-loop sets writer=None).
-		drop(client);
-
-		// Call OnClose -> plugin aborts the pipe task and shuts down the writer.
-		unsafe {
-			chan_cb.OnClose().expect("OnClose");
-		}
-
-		// Verify the writer is released: subsequent OnDataReceived must
-		// return ERROR_PIPE_NOT_CONNECTED because pipe_writer is None.
-		// This is the direct contract that "OnClose releases the writer";
-		// probing the named pipe path is unreliable because the plugin
-		// respawns a fresh server in its reader loop, so client open may
-		// race with the abort and yield PIPE_BUSY rather than FILE_NOT_FOUND.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		loop {
-			let result = unsafe { chan_cb.OnDataReceived(b"after-close") };
-			match result {
-				Err(e)
-					if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into() =>
-				{
-					break;
-				}
-				Err(e) if std::time::Instant::now() < deadline => {
-					// Different error — wait and retry briefly.
-					tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-					if std::time::Instant::now() >= deadline {
-						panic!("unexpected error from OnDataReceived after OnClose: {e:?}");
-					}
-				}
-				Err(e) => {
-					panic!("unexpected error from OnDataReceived after OnClose: {e:?}")
-				}
-				Ok(()) if std::time::Instant::now() < deadline => {
-					tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-				}
-				Ok(()) => panic!("OnDataReceived after OnClose unexpectedly succeeded"),
-			}
-		}
-	});
-
-	drop(plugin);
+	// Verify the writer is released: subsequent OnDataReceived must
+	// return ERROR_PIPE_NOT_CONNECTED because the writer slot is None.
+	let mut last = None;
+	assert!(
+		wait_until(Duration::from_secs(5), || {
+			let result = unsafe { fx.chan_cb.OnDataReceived(b"after-close") };
+			let released = matches!(
+				&result,
+				Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+			);
+			last = Some(result);
+			released
+		}),
+		"OnDataReceived after OnClose never returned ERROR_PIPE_NOT_CONNECTED; last: {last:?}"
+	);
 }
 
 #[test]
@@ -390,149 +318,290 @@ fn multiple_channels_produce_multiple_listeners() {
 
 /// After a client disconnects, the plugin keeps the pipe name claimed
 /// (same instance disconnected and reused), so a second client can connect
-/// and the channel pump keeps working.
+/// and the channel pump keeps working — in both directions.
 #[test]
 #[serial]
 fn pipe_client_can_reconnect_after_disconnect() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
+	// Disconnect and wait for XOFF so the plugin has observed it.
+	drop(client);
+	wait_for_xoff(&fx.chan_state);
 
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
+	// Second client connects to the same, still-claimed pipe name.
+	let mut client2 = common::connect_pipe_client("RdPipeTest", fx.addr, Duration::from_secs(5));
+
+	// Wait for the second XON.
+	assert!(
+		wait_until(Duration::from_secs(5), || {
+			fx.chan_state.flat_writes().iter().filter(|&&b| b == 0x11u8).count() >= 2
+		}),
+		"second XON never written; got {:?}",
+		fx.chan_state.flat_writes()
+	);
+
+	// Pipe -> channel still pumps after the reconnect.
+	client2.write_all(b"again").expect("pipe write");
+	client2.flush().expect("pipe flush");
+	assert!(
+		wait_until(Duration::from_secs(5), || {
+			fx.chan_state.flat_writes().windows(b"again".len()).any(|w| w == b"again")
+		}),
+		"payload never arrived on channel after reconnect; got {:?}",
+		fx.chan_state.flat_writes()
+	);
+
+	// Channel -> pipe still pumps after the reconnect.
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
+		fx.chan_cb.OnDataReceived(b"back").expect("OnDataReceived after reconnect");
 	}
-
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		use tokio::io::AsyncWriteExt;
-
-		let client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for XON from the first connection.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-		assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for first XON");
-
-		// Disconnect and wait for XOFF so the plugin has observed it.
-		drop(client);
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while !chan_state.flat_writes().contains(&0x13u8) {
-			if std::time::Instant::now() >= deadline {
-				panic!("XOFF never written; got {:?}", chan_state.flat_writes());
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-
-		// Second client connects to the same, still-claimed pipe name.
-		let mut client2 =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for the second XON.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.flat_writes().iter().filter(|&&b| b == 0x11u8).count() < 2 {
-			if std::time::Instant::now() >= deadline {
-				panic!("second XON never written; got {:?}", chan_state.flat_writes());
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-
-		// Pipe -> channel still pumps after the reconnect.
-		client2.write_all(b"again").await.expect("pipe write");
-		client2.flush().await.expect("pipe flush");
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		loop {
-			let flat = chan_state.flat_writes();
-			if flat.windows(b"again".len()).any(|w| w == b"again") {
-				break;
-			}
-			if std::time::Instant::now() >= deadline {
-				panic!("payload never arrived on channel after reconnect; got {flat:?}");
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-
-		// Channel -> pipe still pumps after the reconnect.
-		use tokio::io::AsyncReadExt;
-		unsafe {
-			chan_cb.OnDataReceived(b"back").expect("OnDataReceived after reconnect");
-		}
-		let mut got = [0u8; 4];
-		tokio::time::timeout(std::time::Duration::from_secs(5), client2.read_exact(&mut got))
-			.await
-			.expect("read timeout after reconnect")
-			.expect("read after reconnect");
-		assert_eq!(&got, b"back");
-	});
+	let got = common::read_exact_with_timeout(&client2, 4, Duration::from_secs(5))
+		.expect("read after reconnect");
+	assert_eq!(&got, b"back");
 
 	unsafe {
-		chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().expect("OnClose");
 	}
-	drop(plugin);
 }
 
-/// Regression test for issue #57: `OnClose` must terminate the reader task
+/// A pipe client that stops reading must never block the RDS callback
+/// thread: `OnDataReceived` queues without blocking and, once the queued
+/// backlog exceeds its budget, disconnects the stalled client.
+#[test]
+#[serial]
+fn stalled_client_disconnected_at_cap() {
+	let fx = setup_channel();
+
+	// Client connects and never reads.
+	let client = fx.connect_client_and_wait_for_xon();
+
+	// Flood the channel with max-size chunks. Every call must return
+	// promptly; once the backlog budget trips, the plugin disconnects the
+	// stalled client and later calls fail with ERROR_PIPE_NOT_CONNECTED.
+	let chunk = vec![0xA5u8; 64 * 1024];
+	let mut disconnected = false;
+	for _ in 0..1000 {
+		let started = Instant::now();
+		let result = unsafe { fx.chan_cb.OnDataReceived(&chunk) };
+		let elapsed = started.elapsed();
+		assert!(
+			elapsed < Duration::from_secs(2),
+			"OnDataReceived blocked for {elapsed:?} with a stalled client"
+		);
+		match result {
+			Ok(()) => {}
+			Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into() => {
+				disconnected = true;
+				break;
+			}
+			Err(e) => panic!("unexpected OnDataReceived error: {e:?}"),
+		}
+	}
+	assert!(disconnected, "stalled client was never disconnected");
+
+	// The plugin observed the disconnect: XOFF went to the channel.
+	wait_for_xoff(&fx.chan_state);
+
+	// The stalled client's connection is dead.
+	let read_result = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5));
+	assert!(read_result.is_err(), "expected read failure on disconnected client");
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+}
+
+/// A single chunk larger than the pipe buffer is forwarded intact: the DVC
+/// framework places no upper bound on `OnDataReceived` size, and the blocking
+/// pipe write drains fully as the client reads. The channel keeps working
+/// afterwards.
+#[test]
+#[serial]
+fn oversized_chunk_forwarded() {
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
+
+	let oversized: Vec<u8> = (0..256 * 1024).map(|i| (i % 256) as u8).collect();
+	unsafe {
+		fx.chan_cb.OnDataReceived(&oversized).expect("OnDataReceived for oversized chunk");
+	}
+	let got = common::read_exact_with_timeout(&client, oversized.len(), Duration::from_secs(10))
+		.expect("read oversized chunk");
+	assert_eq!(got, oversized, "oversized chunk was not forwarded intact");
+
+	// Channel still pumps normally after the large write.
+	unsafe {
+		fx.chan_cb.OnDataReceived(b"still-alive").expect("OnDataReceived after oversized");
+	}
+	let tail =
+		common::read_exact_with_timeout(&client, b"still-alive".len(), Duration::from_secs(5))
+			.expect("read after oversized");
+	assert_eq!(&tail, b"still-alive");
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+}
+
+/// Teardown with a non-reading client: `OnClose` drains for up to the
+/// drain timeout, then the in-flight write is cancelled, the writer exits
+/// and the instance closes.
+#[test]
+#[serial]
+fn on_close_with_stalled_client_severs_after_drain_timeout() {
+	let fx = setup_channel();
+
+	// Client connects and never reads.
+	let mut client = fx.connect_client_and_wait_for_xon();
+
+	// Two max-size chunks: the first fills the outbound pipe buffer, the
+	// second parks the writer thread in a pending overlapped write.
+	let chunk = vec![0xC3u8; 64 * 1024];
+	unsafe {
+		fx.chan_cb.OnDataReceived(&chunk).expect("first OnDataReceived");
+		fx.chan_cb.OnDataReceived(&chunk).expect("second OnDataReceived");
+	}
+	// Give the writer time to reach the pending write before closing.
+	std::thread::sleep(Duration::from_millis(100));
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+
+	// After the drain timeout the parked writer is killed and the instance
+	// closes; the client observes that as failing writes. A hang in
+	// teardown would leave the connection alive and trip this timeout.
+	assert!(
+		wait_until(Duration::from_secs(10), || client.write(b"x").is_err()),
+		"pipe never closed after OnClose with a non-reading client"
+	);
+
+	// The writer slot is gone as well.
+	let r = unsafe { fx.chan_cb.OnDataReceived(b"\xab") };
+	assert!(
+		matches!(
+			r,
+			Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+		),
+		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {r:?}"
+	);
+}
+
+/// Releasing the channel callback without `OnClose` (abnormal host
+/// teardown) must still shut the pump down and close the pipe instance.
+#[test]
+#[serial]
+fn dropping_callback_without_onclose_closes_pipe() {
+	let fx = setup_channel();
+	let client = fx.connect_client_and_wait_for_xon();
+
+	drop(fx.chan_cb);
+
+	let eof = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe after callback release");
+	assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof, "expected EOF, got {eof:?}");
+}
+
+/// Graceful close delivers everything already accepted: chunks queued via
+/// `OnDataReceived` before `OnClose` reach a reading client intact,
+/// followed by end-of-pipe.
+#[test]
+#[serial]
+fn on_close_drains_queued_data_to_reading_client() {
+	let fx = setup_channel();
+
+	// No reads yet: the first chunk fills the pipe buffer, the rest queue.
+	let client = fx.connect_client_and_wait_for_xon();
+
+	let total = 3 * 64 * 1024;
+	let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+	for part in payload.chunks(64 * 1024) {
+		unsafe {
+			fx.chan_cb.OnDataReceived(part).expect("OnDataReceived");
+		}
+	}
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+
+	let got = common::read_exact_with_timeout(&client, total, Duration::from_secs(5))
+		.expect("read of drained data");
+	assert_eq!(got, payload, "queued data was not drained intact");
+
+	let eof = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe after drain");
+	assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof, "expected EOF, got {eof:?}");
+}
+
+/// Many small chunks to a non-reading client: the stall gate is a byte
+/// budget, so tiny chunks far below it must never trip a disconnect no
+/// matter their count.
+#[test]
+#[serial]
+fn many_small_chunks_below_budget_not_disconnected() {
+	let fx = setup_channel();
+
+	// Client connects and never reads: ~655 chunks land in the pipe buffer,
+	// the rest queue (~134 KiB, far under the byte budget).
+	let _client = fx.connect_client_and_wait_for_xon();
+
+	let chunk = [0x5Au8; 100];
+	for i in 0..2000 {
+		let result = unsafe { fx.chan_cb.OnDataReceived(&chunk) };
+		assert!(result.is_ok(), "send {i} tripped the stall gate: {result:?}");
+	}
+
+	unsafe {
+		fx.chan_cb.OnClose().expect("OnClose");
+	}
+}
+
+/// A channel whose `Write` starts failing (transport died before `OnClose`)
+/// must tear down like a close: the connected client observes a graceful
+/// end-of-pipe, not a forced disconnect.
+#[test]
+#[serial]
+fn channel_write_failure_closes_pipe_gracefully() {
+	let fx = setup_channel();
+	let mut client = fx.connect_client_and_wait_for_xon();
+
+	fx.chan_state.fail_writes.store(true, std::sync::atomic::Ordering::SeqCst);
+	client.write_all(b"boom").expect("pipe write");
+	client.flush().expect("pipe flush");
+
+	// Graceful instance close = EOF (read_exact reports UnexpectedEof);
+	// a forced DisconnectNamedPipe surfaces as raw OS error 233.
+	let err = common::read_exact_with_timeout(&client, 1, Duration::from_secs(5))
+		.expect_err("expected end-of-pipe");
+	assert_ne!(err.raw_os_error(), Some(233), "client saw a forced disconnect: {err:?}");
+	assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "expected graceful EOF, got {err:?}");
+}
+
+/// Regression test for issue #57: `OnClose` must terminate the reader
 /// while the client is still connected and any subsequent `OnDataReceived`
-/// must fail with `ERROR_PIPE_NOT_CONNECTED`. Shutdown is driven cooperatively
-/// via `CancellationToken` + `tokio::select!`, with `OnClose` synchronously
-/// dropping the write half so this assertion holds without polling.
+/// must fail with `ERROR_PIPE_NOT_CONNECTED`. `OnClose` synchronously takes
+/// the writer slot and signals the shutdown event, so this assertion holds
+/// without polling.
 #[test]
 #[serial]
 fn on_close_terminates_reader_cooperatively_while_client_connected() {
-	let hkcu = common::HkcuOverride::new().expect("override hkcu");
-	hkcu.write_channel_names(&["RdPipeTest"]).expect("write channel names");
+	let fx = setup_channel();
+	let _client = fx.connect_client_and_wait_for_xon();
 
-	let dll = common::DllHandle::load();
-	let plugin = common::create_plugin(dll);
+	// Cooperative shutdown: OnClose while the client is still connected.
+	unsafe { fx.chan_cb.OnClose().expect("OnClose") };
 
-	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
-	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
-	}
-
-	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
-	let (channel_iface, chan_state) = common::FakeVirtualChannel::new();
-	let chan_cb = common::trigger_new_channel(&listener_cb, &channel_iface);
-	let addr = common::channel_addr(&channel_iface);
-
-	common::block_on(async {
-		let _client =
-			common::connect_pipe_client("RdPipeTest", addr, std::time::Duration::from_secs(5))
-				.await;
-
-		// Wait for XON, confirming the pipe connection handshake completed.
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while chan_state.snapshot_writes().is_empty() && std::time::Instant::now() < deadline {
-			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-		}
-		assert!(!chan_state.snapshot_writes().is_empty(), "timed out waiting for XON");
-
-		// Cooperative shutdown: OnClose while the client is still connected.
-		unsafe { chan_cb.OnClose().expect("OnClose") };
-
-		// Subsequent OnDataReceived must fail with ERROR_PIPE_NOT_CONNECTED
-		// (writer released synchronously by OnClose).
-		let r = unsafe { chan_cb.OnDataReceived(b"\xab") };
-		assert!(
-			matches!(
-				r,
-				Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
-			),
-			"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {:?}",
-			r
-		);
-	});
-
-	drop(plugin);
+	// Subsequent OnDataReceived must fail with ERROR_PIPE_NOT_CONNECTED
+	// (writer slot released synchronously by OnClose).
+	let r = unsafe { fx.chan_cb.OnDataReceived(b"\xab") };
+	assert!(
+		matches!(
+			r,
+			Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+		),
+		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {:?}",
+		r
+	);
 }

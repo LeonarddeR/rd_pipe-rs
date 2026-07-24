@@ -59,6 +59,9 @@ version = "0.62.2"
 features = [
     "Win32_Foundation",
     "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_System_SystemServices",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
@@ -67,35 +70,10 @@ features = [
     "Win32_System_Threading",
 ]
 
-[dependencies.tokio]
-version = "1.52"
-features = [
-    "rt-multi-thread",
-    "net",
-    "parking_lot",
-    "io-util",
-    "time",
-    "macros",
-]
-
-[dependencies.tokio-util]
-version = "0.7"
-default-features = false
-
 [dev-dependencies]
 libloading = "0.9"
 tempfile = "3"
 serial_test = "3"
-
-[dev-dependencies.tokio]
-version = "1.52"
-features = [
-    "macros",
-    "rt-multi-thread",
-    "net",
-    "io-util",
-    "time",
-]
 
 [dev-dependencies.windows]
 version = "0.62.2"
