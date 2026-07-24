@@ -199,7 +199,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build, build-arm64x]
+    needs: [style, build, build-arm64x, test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
