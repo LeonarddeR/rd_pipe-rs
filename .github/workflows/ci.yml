@@ -37,6 +37,9 @@ jobs:
     name: Test (${{ matrix.name }})
     needs: [build, build-arm64x]
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      checks: write
     strategy:
       fail-fast: false
       matrix:
