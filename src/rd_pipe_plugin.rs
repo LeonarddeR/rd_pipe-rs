@@ -199,6 +199,19 @@ fn channel_write(channel: &IWTSVirtualChannel, data: &[u8]) -> Result<()> {
 const MSG_XON: u8 = 0x11;
 const MSG_XOFF: u8 = 0x13;
 
+fn write_flow_control(channel: &IWTSVirtualChannel, byte: u8) -> Result<()> {
+	match channel_write(channel, &[byte]) {
+		Ok(()) => {
+			trace!("Wrote flow control byte {:#04x} to channel", byte);
+			Ok(())
+		}
+		Err(e) => {
+			error!("Error writing flow control byte {:#04x} to channel: {}", byte, e);
+			Err(e)
+		}
+	}
+}
+
 fn build_pipe_sddl(logon_sid: &str) -> String {
 	format!("D:(A;;GRGW;;;{logon_sid})S:(ML;;NRNW;;;ME)")
 }
@@ -207,21 +220,17 @@ fn build_pipe_sddl(logon_sid: &str) -> String {
 #[derive(Debug)]
 enum PipeIo {
 	Done(u32),
-	Disconnected(Error),
 	Shutdown,
 	Failed(Error),
 }
 
-fn classify_error(e: Error) -> PipeIo {
-	if e.code() == ERROR_BROKEN_PIPE.into()
+/// Whether a failed pipe op means the client side is gone rather than a
+/// genuine IO error.
+fn is_disconnect(e: &Error) -> bool {
+	e.code() == ERROR_BROKEN_PIPE.into()
 		|| e.code() == ERROR_PIPE_NOT_CONNECTED.into()
 		|| e.code() == ERROR_NO_DATA.into()
 		|| e.code() == ERROR_OPERATION_ABORTED.into()
-	{
-		PipeIo::Disconnected(e)
-	} else {
-		PipeIo::Failed(e)
-	}
 }
 
 /// Runs one overlapped pipe op via [`run_overlapped`], folding errors into
@@ -238,7 +247,7 @@ where
 	match run_overlapped(handle, shutdown, op_event, start) {
 		Ok(OverlappedWait::Completed(n)) => PipeIo::Done(n),
 		Ok(OverlappedWait::Shutdown) => PipeIo::Shutdown,
-		Err(e) => classify_error(e),
+		Err(e) => PipeIo::Failed(e),
 	}
 }
 
@@ -406,7 +415,7 @@ fn run_pipe_pump(
 				trace!("Shutdown signalled while awaiting pipe client connection");
 				break;
 			}
-			PipeIo::Disconnected(e) | PipeIo::Failed(e) => {
+			PipeIo::Failed(e) => {
 				error!("Error connecting to pipe client: {}", e);
 				disconnect_pipe(&handle, "connect retry");
 				if shutdown.wait(100) {
@@ -436,12 +445,8 @@ fn run_pipe_pump(
 			}
 		};
 
-		match channel_write(&channel, &[MSG_XON]) {
-			Ok(()) => trace!("Wrote XON to channel"),
-			Err(e) => {
-				error!("Error writing XON to channel: {}", e);
-				shutdown.signal();
-			}
+		if write_flow_control(&channel, MSG_XON).is_err() {
+			shutdown.signal();
 		}
 
 		trace!("Initiating pipe_reader loop");
@@ -462,26 +467,16 @@ fn run_pipe_pump(
 				}
 				PipeIo::Shutdown => {
 					trace!("Shutdown signalled inside reader loop");
-					match channel_write(&channel, &[MSG_XOFF]) {
-						Ok(()) => trace!("Wrote XOFF to channel on shutdown"),
-						Err(e) => error!("Error writing XOFF on shutdown: {}", e),
-					}
-					break;
-				}
-				PipeIo::Disconnected(e) => {
-					info!("Pipe closed by client: {}", e);
-					match channel_write(&channel, &[MSG_XOFF]) {
-						Ok(()) => trace!("Wrote XOFF to channel"),
-						Err(e) => error!("Error writing XOFF to channel: {}", e),
-					}
+					let _ = write_flow_control(&channel, MSG_XOFF);
 					break;
 				}
 				PipeIo::Failed(e) => {
-					error!("Error reading from pipe client: {}", e);
-					match channel_write(&channel, &[MSG_XOFF]) {
-						Ok(()) => trace!("Wrote XOFF to channel"),
-						Err(e) => error!("Error writing XOFF to channel: {}", e),
+					if is_disconnect(&e) {
+						info!("Pipe closed by client: {}", e);
+					} else {
+						error!("Error reading from pipe client: {}", e);
 					}
+					let _ = write_flow_control(&channel, MSG_XOFF);
 					break;
 				}
 			}
@@ -536,13 +531,13 @@ fn run_pipe_writer(handle: Arc<OwnedHandle>, receiver: Receiver<Vec<u8>>, shutdo
 				trace!("Shutdown signalled inside writer loop");
 				break;
 			}
-			PipeIo::Disconnected(e) => {
-				info!("Pipe write target gone: {}", e);
-				break;
-			}
 			PipeIo::Failed(e) => {
-				error!("Error writing to pipe: {}", e);
-				disconnect_pipe(&handle, "write failure");
+				if is_disconnect(&e) {
+					info!("Pipe write target gone: {}", e);
+				} else {
+					error!("Error writing to pipe: {}", e);
+					disconnect_pipe(&handle, "write failure");
+				}
 				break;
 			}
 		}
@@ -692,11 +687,9 @@ mod tests {
 	}
 
 	#[test]
-	fn operation_aborted_classified_as_disconnected() {
+	fn operation_aborted_is_a_disconnect() {
 		// A pending read/write aborted by a cross-thread `DisconnectNamedPipe`
-		// (e.g. the stalled-client path) completes with ERROR_OPERATION_ABORTED,
-		// which is a disconnect, not a failure.
-		let pio = classify_error(Error::from(ERROR_OPERATION_ABORTED));
-		assert!(matches!(pio, PipeIo::Disconnected(_)), "expected Disconnected, got {pio:?}");
+		// (e.g. the stalled-client path) completes with ERROR_OPERATION_ABORTED.
+		assert!(is_disconnect(&Error::from(ERROR_OPERATION_ABORTED)));
 	}
 }
