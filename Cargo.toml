@@ -73,7 +73,7 @@ features = [
 [dev-dependencies]
 libloading = "0.9"
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
 
 [dev-dependencies.windows]
 version = "0.62.2"
