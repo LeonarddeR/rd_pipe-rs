@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The arm64, arm64ec and arm64x CI targets build on `stable` instead of
+  `beta`, now that the arm64ec TLS-destructors→FLS fix
+  (rust-lang/rust#148799) has reached stable in Rust 1.98.0. Every CI
+  target is on the same toolchain again, so the per-target `toolchain`
+  matrix key is gone.
+- Declared a minimum supported Rust version of `1.98` for the whole
+  crate. The requirement originates with arm64ec — an ARM64X image built
+  without rust-lang/rust#148799 aborts at `0xc0000096` when its EC view
+  is loaded — but is enforced for every target so the failure is a clear
+  `requires rustc 1.98` message instead of a crash at DLL load.
+
 ## [0.9.0] - 2026-07-24
 
 ### Changed

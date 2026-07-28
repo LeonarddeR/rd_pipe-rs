@@ -23,6 +23,7 @@ repository = "https://github.com/leonardder/rd_pipe-rs"
 license = "AGPL-3.0-or-later"
 categories = ["network-programming", "os::windows-apis"]
 edition = "2024"
+rust-version = "1.98"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

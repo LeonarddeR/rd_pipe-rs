@@ -26,7 +26,7 @@ The pipe ACL is built from the caller's logon SID, so only the interactive user 
 
 ## Building from source
 
-Requires the MSVC Rust toolchain on Windows. Cross-platform builds are not supported.
+Requires the MSVC Rust toolchain on Windows, version 1.98 or newer. Cross-platform builds are not supported.
 
 ```
 cargo build
