@@ -48,32 +48,26 @@ jobs:
             target: i686-pc-windows-msvc
             runner: windows-2025-vs2026
             artifact: rd_pipe-x86
-            toolchain: stable
           - name: x64
             target: x86_64-pc-windows-msvc
             runner: windows-2025-vs2026
             artifact: rd_pipe-x64
-            toolchain: stable
           - name: arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64
-            toolchain: beta
           - name: arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64ec
-            toolchain: beta
           - name: arm64x-on-arm64
             target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
-            toolchain: beta
           - name: arm64x-on-arm64ec
             target: arm64ec-pc-windows-msvc
             runner: windows-11-arm
             artifact: rd_pipe-arm64x
-            toolchain: beta
 
     steps:
       - uses: actions/checkout@v7
@@ -81,7 +75,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.toolchain }}
+          toolchain: stable
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -124,16 +118,12 @@ jobs:
         include:
           - target: i686-pc-windows-msvc
             suffix: x86
-            toolchain: stable
           - target: x86_64-pc-windows-msvc
             suffix: x64
-            toolchain: stable
           - target: aarch64-pc-windows-msvc
             suffix: arm64
-            toolchain: beta
           - target: arm64ec-pc-windows-msvc
             suffix: arm64ec
-            toolchain: beta
 
     steps:
       - uses: actions/checkout@v7
@@ -141,7 +131,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.toolchain }}
+          toolchain: stable
           target: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
