@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+First stable release. The pipe transport and registration interface as
+shipped in 0.9.0 have proven stable in production use; from this release
+on, changes to them follow the semantic versioning compatibility
+guarantees.
+
 ### Changed
 
 - The arm64, arm64ec and arm64x CI targets build on `stable` instead of
