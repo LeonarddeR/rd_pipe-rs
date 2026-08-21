@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-21
+
 First stable release. The pipe transport and registration interface as
 shipped in 0.9.0 have proven stable in production use; from this release
 on, changes to them follow the semantic versioning compatibility

@@ -15,7 +15,7 @@
 [package]
 name = "rd_pipe"
 description = "Windows Remote Desktop Services Dynamic Virtual Channel implementation using named pipes"
-version = "0.9.0"
+version = "1.0.0"
 publish = false
 authors = ["Leonard de Ruijter <alderuijter@gmail.com>"]
 readme = "README.md"
