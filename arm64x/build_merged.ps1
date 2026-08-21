@@ -8,7 +8,7 @@
 #   -OutDir     : directory to place the merged rd_pipe.dll
 #
 # Requires a VS Developer Command Prompt environment (vcvarsall arm64 or the
-# ilammy/msvc-dev-cmd action with arch:arm64). This sets:
+# step-security/msvc-dev-cmd action with arch:arm64). This sets:
 #   VCToolsInstallDir -> MSVC tool + lib root
 #   WindowsSdkDir + WindowsSDKVersion -> SDK lib root
 #   LIB               -> arm64 MSVC + arm64 ucrt + arm64 um (native view)
@@ -50,7 +50,7 @@ Write-Host "==> Windows SDK root: $sdkLib"
 # dumpbin.exe and link.exe must be resolved via VCToolsInstallDir rather than
 # relying on PATH. Two PATH hazards on GitHub-hosted runners:
 #
-#   1. vcvarsall x64_arm64 (ilammy/msvc-dev-cmd arch:arm64) prepends
+#   1. vcvarsall x64_arm64 (step-security/msvc-dev-cmd arch:arm64) prepends
 #      HostX64\arm64 but NOT HostX64\x64, so dumpbin.exe is missing from PATH.
 #
 #   2. Git for Windows ships C:\Program Files\Git\usr\bin\link.exe (a Unix

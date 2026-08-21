@@ -169,7 +169,7 @@ jobs:
           path: artifacts/arm64ec
 
       - name: Set up VS Developer Command Prompt (arm64)
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: step-security/msvc-dev-cmd@v1
         with:
           arch: arm64
 
