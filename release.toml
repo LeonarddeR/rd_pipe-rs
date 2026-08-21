@@ -12,14 +12,14 @@ tag-message = "Release {{version}}"
 pre-release-commit-message = "chore: release {{version}}"
 allow-branch = ["master"]
 
-# Local release gate: fmt, then clippy (warnings as errors), then the full test
-# suite (cargo test builds the cdylib and runs unit + integration tests against
-# it). cargo-release allows one hook command, so the three are chained via
-# cmd /c.
+# Local release gate: fmt, then clippy (warnings as errors), then a debug build
+# of the cdylib (the DLL the smoke tests load — cargo test itself only builds
+# the rlib for linking), then the full test suite. cargo-release allows one
+# hook command, so the steps are chained via cmd /c.
 pre-release-hook = [
     "cmd",
     "/c",
-    "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test",
+    "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo build && cargo test",
 ]
 
 # Stamp the version/date into CHANGELOG.md on each release.
