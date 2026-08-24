@@ -83,7 +83,7 @@ jobs:
           key: test-${{ matrix.name }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.5
         with:
           tool: cargo-nextest
 
