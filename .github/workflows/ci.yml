@@ -33,6 +33,25 @@ jobs:
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
 
+  bindings:
+    name: Check generated bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/bindgen
+      - name: Regenerate bindings
+        run: cargo bindgen
+      - name: Check generated files are current
+        run: git diff --exit-code -- src/bindings.rs tests/common/bindings.rs
+
   test:
     name: Test (${{ matrix.name }})
     needs: [build, build-arm64x]
@@ -195,7 +214,7 @@ jobs:
     # context instead of naming each job (and re-naming them on every matrix
     # change). alls-green fails if any needed job failed or was skipped.
     name: Check if all checks pass
-    needs: [style, build, build-arm64x, test]
+    needs: [style, bindings, build, build-arm64x, test]
     if: always()
     runs-on: ubuntu-latest
     permissions:
