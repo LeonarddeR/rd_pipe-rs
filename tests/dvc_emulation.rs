@@ -3,13 +3,23 @@
 
 mod common;
 
+use common::bindings::Windows::Win32::{
+	E_UNEXPECTED, ERROR_PIPE_NOT_CONNECTED, IWTSListenerCallback, IWTSPlugin, IWTSVirtualChannel,
+	IWTSVirtualChannelCallback,
+};
 use serial_test::serial;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::Win32::System::RemoteDesktop::{
-	IWTSPlugin, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-};
+use windows_core::WIN32_ERROR;
+
+/// Forwards `data` to the plugin's `OnDataReceived` as length and pointer.
+unsafe fn on_data_received(
+	cb: &IWTSVirtualChannelCallback,
+	data: &[u8],
+) -> windows_core::Result<()> {
+	unsafe { cb.OnDataReceived(data.len() as u32, data.as_ptr()) }.ok()
+}
 
 #[test]
 #[serial]
@@ -32,7 +42,7 @@ fn initialize_creates_listeners_per_channel() {
 
 	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize failed");
+		plugin.Initialize(&mgr_iface).ok().expect("Initialize failed");
 	}
 
 	let events = mgr_state.events.lock().clone();
@@ -51,10 +61,7 @@ fn initialize_creates_listeners_per_channel() {
 }
 
 /// Get the first listener callback with the given channel name from mgr state.
-fn get_listener_cb(
-	mgr_state: &common::FakeMgrState,
-	name: &str,
-) -> windows::Win32::System::RemoteDesktop::IWTSListenerCallback {
+fn get_listener_cb(mgr_state: &common::FakeMgrState, name: &str) -> IWTSListenerCallback {
 	mgr_state
 		.listeners
 		.lock()
@@ -118,7 +125,7 @@ fn setup_channel() -> ChannelFixture {
 
 	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
+		plugin.Initialize(&mgr_iface).ok().expect("Initialize");
 	}
 
 	let listener_cb = get_listener_cb(&mgr_state, "RdPipeTest");
@@ -152,7 +159,7 @@ fn new_channel_connection_opens_named_pipe() {
 	let _client = common::connect_pipe_client("RdPipeTest", fx.addr, Duration::from_secs(5));
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -165,7 +172,7 @@ fn channel_to_pipe_round_trip() {
 	// Push data via OnDataReceived -> plugin writes to pipe -> client reads.
 	let payload = b"world";
 	unsafe {
-		fx.chan_cb.OnDataReceived(payload).expect("OnDataReceived");
+		on_data_received(&fx.chan_cb, payload).expect("OnDataReceived");
 	}
 
 	let got = common::read_exact_with_timeout(&client, payload.len(), Duration::from_secs(5))
@@ -173,7 +180,7 @@ fn channel_to_pipe_round_trip() {
 	assert_eq!(&got, b"world");
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -188,7 +195,7 @@ fn pipe_close_writes_xoff_to_channel() {
 	wait_for_xoff(&fx.chan_state);
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -216,7 +223,7 @@ fn pipe_to_channel_round_trip() {
 	);
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -234,13 +241,9 @@ fn initialize_with_empty_channels_returns_e_unexpected() {
 	let plugin = common::create_plugin(dll);
 
 	let (mgr_iface, _state) = common::FakeChannelMgr::new();
-	let result = unsafe { plugin.Initialize(&mgr_iface) };
+	let result = unsafe { plugin.Initialize(&mgr_iface) }.ok();
 	match result {
-		Err(e) => assert_eq!(
-			e.code(),
-			windows::Win32::Foundation::E_UNEXPECTED,
-			"expected E_UNEXPECTED, got {e:?}"
-		),
+		Err(e) => assert_eq!(e.code(), E_UNEXPECTED, "expected E_UNEXPECTED, got {e:?}"),
 		Ok(()) => {
 			// HKLM has ChannelNames registered — acceptable on registered machines.
 		}
@@ -261,7 +264,7 @@ fn on_close_releases_pipe_writer() {
 
 	// Call OnClose -> plugin signals shutdown and releases the writer slot.
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 
 	// Verify the writer is released: subsequent OnDataReceived must
@@ -269,10 +272,10 @@ fn on_close_releases_pipe_writer() {
 	let mut last = None;
 	assert!(
 		wait_until(Duration::from_secs(5), || {
-			let result = unsafe { fx.chan_cb.OnDataReceived(b"after-close") };
+			let result = unsafe { on_data_received(&fx.chan_cb, b"after-close") };
 			let released = matches!(
 				&result,
-				Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+				Err(e) if e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into()
 			);
 			last = Some(result);
 			released
@@ -292,7 +295,7 @@ fn multiple_channels_produce_multiple_listeners() {
 
 	let (mgr_iface, mgr_state) = common::FakeChannelMgr::new();
 	unsafe {
-		plugin.Initialize(&mgr_iface).expect("Initialize");
+		plugin.Initialize(&mgr_iface).ok().expect("Initialize");
 	}
 
 	let names: std::collections::HashSet<String> = mgr_state
@@ -354,14 +357,14 @@ fn pipe_client_can_reconnect_after_disconnect() {
 
 	// Channel -> pipe still pumps after the reconnect.
 	unsafe {
-		fx.chan_cb.OnDataReceived(b"back").expect("OnDataReceived after reconnect");
+		on_data_received(&fx.chan_cb, b"back").expect("OnDataReceived after reconnect");
 	}
 	let got = common::read_exact_with_timeout(&client2, 4, Duration::from_secs(5))
 		.expect("read after reconnect");
 	assert_eq!(&got, b"back");
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -383,7 +386,7 @@ fn stalled_client_disconnected_at_cap() {
 	let mut disconnected = false;
 	for _ in 0..1000 {
 		let started = Instant::now();
-		let result = unsafe { fx.chan_cb.OnDataReceived(&chunk) };
+		let result = unsafe { on_data_received(&fx.chan_cb, &chunk) };
 		let elapsed = started.elapsed();
 		assert!(
 			elapsed < Duration::from_secs(2),
@@ -391,7 +394,7 @@ fn stalled_client_disconnected_at_cap() {
 		);
 		match result {
 			Ok(()) => {}
-			Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into() => {
+			Err(e) if e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into() => {
 				disconnected = true;
 				break;
 			}
@@ -408,7 +411,7 @@ fn stalled_client_disconnected_at_cap() {
 	assert!(read_result.is_err(), "expected read failure on disconnected client");
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -424,7 +427,7 @@ fn oversized_chunk_forwarded() {
 
 	let oversized: Vec<u8> = (0..256 * 1024).map(|i| (i % 256) as u8).collect();
 	unsafe {
-		fx.chan_cb.OnDataReceived(&oversized).expect("OnDataReceived for oversized chunk");
+		on_data_received(&fx.chan_cb, &oversized).expect("OnDataReceived for oversized chunk");
 	}
 	let got = common::read_exact_with_timeout(&client, oversized.len(), Duration::from_secs(10))
 		.expect("read oversized chunk");
@@ -432,7 +435,7 @@ fn oversized_chunk_forwarded() {
 
 	// Channel still pumps normally after the large write.
 	unsafe {
-		fx.chan_cb.OnDataReceived(b"still-alive").expect("OnDataReceived after oversized");
+		on_data_received(&fx.chan_cb, b"still-alive").expect("OnDataReceived after oversized");
 	}
 	let tail =
 		common::read_exact_with_timeout(&client, b"still-alive".len(), Duration::from_secs(5))
@@ -440,7 +443,7 @@ fn oversized_chunk_forwarded() {
 	assert_eq!(&tail, b"still-alive");
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -459,14 +462,14 @@ fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	// second parks the writer thread in a pending overlapped write.
 	let chunk = vec![0xC3u8; 64 * 1024];
 	unsafe {
-		fx.chan_cb.OnDataReceived(&chunk).expect("first OnDataReceived");
-		fx.chan_cb.OnDataReceived(&chunk).expect("second OnDataReceived");
+		on_data_received(&fx.chan_cb, &chunk).expect("first OnDataReceived");
+		on_data_received(&fx.chan_cb, &chunk).expect("second OnDataReceived");
 	}
 	// Give the writer time to reach the pending write before closing.
 	std::thread::sleep(Duration::from_millis(100));
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 
 	// After the drain timeout the parked writer is killed and the instance
@@ -478,11 +481,11 @@ fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	);
 
 	// The writer slot is gone as well.
-	let r = unsafe { fx.chan_cb.OnDataReceived(b"\xab") };
+	let r = unsafe { on_data_received(&fx.chan_cb, b"\xab") };
 	assert!(
 		matches!(
 			r,
-			Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+			Err(ref e) if e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into()
 		),
 		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {r:?}"
 	);
@@ -518,12 +521,12 @@ fn on_close_drains_queued_data_to_reading_client() {
 	let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
 	for part in payload.chunks(64 * 1024) {
 		unsafe {
-			fx.chan_cb.OnDataReceived(part).expect("OnDataReceived");
+			on_data_received(&fx.chan_cb, part).expect("OnDataReceived");
 		}
 	}
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 
 	let got = common::read_exact_with_timeout(&client, total, Duration::from_secs(5))
@@ -549,12 +552,12 @@ fn many_small_chunks_below_budget_not_disconnected() {
 
 	let chunk = [0x5Au8; 100];
 	for i in 0..2000 {
-		let result = unsafe { fx.chan_cb.OnDataReceived(&chunk) };
+		let result = unsafe { on_data_received(&fx.chan_cb, &chunk) };
 		assert!(result.is_ok(), "send {i} tripped the stall gate: {result:?}");
 	}
 
 	unsafe {
-		fx.chan_cb.OnClose().expect("OnClose");
+		fx.chan_cb.OnClose().ok().expect("OnClose");
 	}
 }
 
@@ -591,15 +594,15 @@ fn on_close_terminates_reader_cooperatively_while_client_connected() {
 	let _client = fx.connect_client_and_wait_for_xon();
 
 	// Cooperative shutdown: OnClose while the client is still connected.
-	unsafe { fx.chan_cb.OnClose().expect("OnClose") };
+	unsafe { fx.chan_cb.OnClose().ok().expect("OnClose") };
 
 	// Subsequent OnDataReceived must fail with ERROR_PIPE_NOT_CONNECTED
 	// (writer slot released synchronously by OnClose).
-	let r = unsafe { fx.chan_cb.OnDataReceived(b"\xab") };
+	let r = unsafe { on_data_received(&fx.chan_cb, b"\xab") };
 	assert!(
 		matches!(
 			r,
-			Err(ref e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED.into()
+			Err(ref e) if e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into()
 		),
 		"expected ERROR_PIPE_NOT_CONNECTED after OnClose, got {:?}",
 		r

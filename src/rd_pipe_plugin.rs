@@ -21,35 +21,23 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Weak};
 use std::thread;
 use tracing::{debug, error, info, instrument, trace, warn};
-use windows::Win32::Foundation::{
-	E_POINTER, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED,
-	ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL,
+use windows_core::{
+	AgileReference, BOOL, BSTR, Error, HSTRING, Interface, OutRef, Result, WIN32_ERROR, implement,
 };
-use windows::Win32::Storage::FileSystem::{
-	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
-};
-use windows::Win32::System::Com::{CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage};
-use windows::Win32::System::IO::OVERLAPPED;
-use windows::Win32::System::Pipes::{
-	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
-	PIPE_WAIT,
-};
-use windows::{
-	Win32::{
-		Foundation::E_UNEXPECTED,
-		System::RemoteDesktop::{
-			IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin,
-			IWTSPlugin_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-			IWTSVirtualChannelCallback_Impl, IWTSVirtualChannelManager,
-		},
-	},
-	core::{AgileReference, BSTR, Error, HSTRING, Interface, PCSTR, Result, implement},
-};
-use windows_core::{BOOL, OutRef, Owned};
 use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 
+use crate::bindings::Windows::Win32::{
+	CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage, ConnectNamedPipe,
+	CreateNamedPipeW, DisconnectNamedPipe, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE,
+	ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
+	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, HANDLE, INVALID_HANDLE_VALUE,
+	IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin, IWTSPlugin_Impl,
+	IWTSVirtualChannel, IWTSVirtualChannelCallback, IWTSVirtualChannelCallback_Impl,
+	IWTSVirtualChannelManager, OVERLAPPED, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+	PIPE_WAIT, ReadFile, WriteFile,
+};
 use crate::overlapped::{OverlappedWait, OwnedHandle, Shutdown, create_event, run_overlapped};
-use crate::security_descriptor::{get_logon_sid, security_attributes_from_sddl};
+use crate::security_descriptor::{LocalMem, get_logon_sid, security_attributes_from_sddl};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
 const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
@@ -72,13 +60,8 @@ impl RdPipePlugin {
 		debug!("Creating listener with name {}", channel_name);
 		let callback: IWTSListenerCallback =
 			RdPipeListenerCallback::new(channel_name.clone()).into();
-		unsafe {
-			channel_mgr.CreateListener(
-				PCSTR::from_raw(format!("{}\0", channel_name).as_ptr()),
-				0,
-				&callback,
-			)
-		}
+		let name = format!("{channel_name}\0");
+		unsafe { channel_mgr.CreateListener(name.as_ptr().cast(), 0, &callback) }
 	}
 
 	#[instrument]
@@ -214,7 +197,7 @@ struct WriterQueue {
 }
 
 fn channel_write(channel: &IWTSVirtualChannel, data: &[u8]) -> Result<()> {
-	unsafe { channel.Write(data, None) }
+	unsafe { channel.Write(data.len() as u32, data.as_ptr(), None) }.ok()
 }
 
 const MSG_XON: u8 = 0x11;
@@ -248,10 +231,9 @@ enum PipeIo {
 /// Whether a failed pipe op means the client side is gone rather than a
 /// genuine IO error.
 fn is_disconnect(e: &Error) -> bool {
-	e.code() == ERROR_BROKEN_PIPE.into()
-		|| e.code() == ERROR_PIPE_NOT_CONNECTED.into()
-		|| e.code() == ERROR_NO_DATA.into()
-		|| e.code() == ERROR_OPERATION_ABORTED.into()
+	[ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED, ERROR_NO_DATA, ERROR_OPERATION_ABORTED]
+		.iter()
+		.any(|&code| e.code() == WIN32_ERROR(code as u32).into())
 }
 
 /// Runs one overlapped pipe op via [`run_overlapped`], folding errors into
@@ -277,9 +259,9 @@ where
 /// synchronous completion.
 fn connect_pipe(handle: &OwnedHandle, shutdown: &Shutdown, op_event: &OwnedHandle) -> PipeIo {
 	run_pipe_op(handle, shutdown, op_event, |h, ov| {
-		match unsafe { ConnectNamedPipe(h, Some(ov)) } {
+		match unsafe { ConnectNamedPipe(h, Some(ov)) }.ok() {
 			Ok(()) => Ok(0),
-			Err(e) if e.code() == ERROR_PIPE_CONNECTED.into() => {
+			Err(e) if e.code() == WIN32_ERROR(ERROR_PIPE_CONNECTED as u32).into() => {
 				trace!("Pipe client connected before ConnectNamedPipe");
 				Ok(0)
 			}
@@ -296,7 +278,8 @@ fn read_pipe(
 ) -> PipeIo {
 	run_pipe_op(handle, shutdown, op_event, |h, ov| unsafe {
 		let mut n = 0u32;
-		ReadFile(h, Some(buf), Some(&mut n), Some(ov as *mut _))?;
+		ReadFile(h, Some(buf.as_mut_ptr().cast()), buf.len() as u32, Some(&mut n), Some(ov))
+			.ok()?;
 		Ok(n)
 	})
 }
@@ -309,7 +292,7 @@ fn write_pipe(
 ) -> PipeIo {
 	run_pipe_op(handle, shutdown, op_event, |h, ov| unsafe {
 		let mut n = 0u32;
-		WriteFile(h, Some(data), Some(&mut n), Some(ov as *mut _))?;
+		WriteFile(h, Some(data.as_ptr().cast()), data.len() as u32, Some(&mut n), Some(ov)).ok()?;
 		Ok(n)
 	})
 }
@@ -317,7 +300,7 @@ fn write_pipe(
 /// Best-effort disconnect of the pipe instance; also the way a pending
 /// overlapped op on the same handle is kicked awake from another thread.
 fn disconnect_pipe(handle: &OwnedHandle, context: &str) {
-	if let Err(e) = unsafe { DisconnectNamedPipe(handle.raw()) } {
+	if let Err(e) = unsafe { DisconnectNamedPipe(handle.raw()) }.ok() {
 		trace!("Error disconnecting pipe instance ({}): {}", context, e);
 	}
 }
@@ -384,11 +367,11 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 			error!("Can't create security attributes, {}", e);
 			e
 		})?;
-		let _sd = Owned::new(HLOCAL(attributes.lpSecurityDescriptor));
+		let _sd = LocalMem(HANDLE(attributes.lpSecurityDescriptor));
 		CreateNamedPipeW(
 			&HSTRING::from(addr),
-			FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_ACCESS_DUPLEX,
-			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+			(FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_ACCESS_DUPLEX) as u32,
+			(PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT) as u32,
 			1,
 			PIPE_BUFFER_SIZE,
 			PIPE_BUFFER_SIZE,
@@ -396,7 +379,7 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 			Some(&attributes),
 		)
 	};
-	if handle.is_invalid() {
+	if handle == INVALID_HANDLE_VALUE {
 		let e = Error::from_thread();
 		error!("Error while creating named pipe server: {}", e);
 		return Err(e);
@@ -669,7 +652,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		let mut writer_lock = self.writer_slot.lock();
 		let Some(queue) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
-			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+			return Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)));
 		};
 		let backlog_bytes = queue.queued_bytes.load(Ordering::Relaxed);
 		let backlog_chunks = queue.queued_chunks.load(Ordering::Relaxed);
@@ -684,7 +667,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			if let Some(handle) = self.pipe_handle.upgrade() {
 				disconnect_pipe(&handle, "stalled client");
 			}
-			return Err(Error::from(ERROR_PIPE_NOT_CONNECTED));
+			return Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)));
 		}
 		// Increments must precede the send: the writer decrements after recv.
 		queue.queued_bytes.fetch_add(chunk.len(), Ordering::Relaxed);
@@ -694,7 +677,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			Err(_) => {
 				debug!("Pipe writer gone while queueing data");
 				writer_lock.take();
-				Err(Error::from(ERROR_PIPE_NOT_CONNECTED))
+				Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)))
 			}
 		}
 	}
@@ -800,6 +783,6 @@ mod tests {
 	fn operation_aborted_is_a_disconnect() {
 		// A pending read/write aborted by a cross-thread `DisconnectNamedPipe`
 		// (e.g. the stalled-client path) completes with ERROR_OPERATION_ABORTED.
-		assert!(is_disconnect(&Error::from(ERROR_OPERATION_ABORTED)));
+		assert!(is_disconnect(&Error::from(WIN32_ERROR(ERROR_OPERATION_ABORTED as u32))));
 	}
 }
