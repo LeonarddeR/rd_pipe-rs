@@ -11,6 +11,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
+      - "tools/bindgen/Cargo.toml"
+      - "tools/bindgen/Cargo.lock"
+      - "tools/bindgen/deny.toml"
       - ".github/workflows/security-audit.yml"
   schedule:
     - cron: "0 6 * * 1"
@@ -30,4 +33,10 @@ jobs:
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
+          command: check advisories bans licenses sources
+
+      - name: Run cargo-deny (bindgen tool)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: tools/bindgen/Cargo.toml
           command: check advisories bans licenses sources
