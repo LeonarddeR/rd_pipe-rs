@@ -1,0 +1,29 @@
+--out tests/common/bindings.rs
+
+--implement
+    Windows.Win32.IWTSVirtualChannel
+    Windows.Win32.IWTSListener
+    Windows.Win32.IWTSVirtualChannelManager
+
+--filter
+    IClassFactory
+    IPropertyBag
+    IWTSPlugin
+    IWTSListener
+    IWTSListenerCallback
+    IWTSVirtualChannel
+    IWTSVirtualChannelCallback
+    IWTSVirtualChannelManager
+
+    CLASS_E_CLASSNOTAVAILABLE
+    E_UNEXPECTED
+    E_FAIL
+    E_NOTIMPL
+    ERROR_PIPE_NOT_CONNECTED
+    ERROR_SUCCESS
+
+    HKEY
+    HKEY_CURRENT_USER
+    KEY_ALL_ACCESS
+    RegLoadAppKeyW
+    RegOverridePredefKey

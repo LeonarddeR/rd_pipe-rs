@@ -1,0 +1,82 @@
+--out src/bindings.rs
+
+--implement
+    Windows.Win32.IClassFactory
+    Windows.Win32.IWTSPlugin
+    Windows.Win32.IWTSListenerCallback
+    Windows.Win32.IWTSVirtualChannelCallback
+
+--filter
+    IClassFactory
+    IWTSPlugin
+    IWTSListener
+    IWTSListenerCallback
+    IWTSVirtualChannel
+    IWTSVirtualChannelCallback
+    IWTSVirtualChannelManager
+
+    CLASS_E_NOAGGREGATION
+    CLASS_E_CLASSNOTAVAILABLE
+    E_NOINTERFACE
+    E_POINTER
+    E_UNEXPECTED
+    S_OK
+
+    ERROR_INVALID_PARAMETER
+    ERROR_IO_PENDING
+    ERROR_BROKEN_PIPE
+    ERROR_NO_DATA
+    ERROR_OPERATION_ABORTED
+    ERROR_PIPE_CONNECTED
+    ERROR_PIPE_NOT_CONNECTED
+    ERROR_NOT_FOUND
+
+    HANDLE
+    HLOCAL
+    HMODULE
+    INVALID_HANDLE_VALUE
+    OVERLAPPED
+    SECURITY_ATTRIBUTES
+    PSECURITY_DESCRIPTOR
+    TOKEN_GROUPS
+    CO_MTA_USAGE_COOKIE
+
+    WAIT_OBJECT_0
+    WAIT_TIMEOUT
+    INFINITE
+    DLL_PROCESS_ATTACH
+    DLL_PROCESS_DETACH
+    UNICODE_STRING_MAX_CHARS
+    FILE_FLAG_FIRST_PIPE_INSTANCE
+    FILE_FLAG_OVERLAPPED
+    PIPE_ACCESS_DUPLEX
+    PIPE_READMODE_BYTE
+    PIPE_TYPE_BYTE
+    PIPE_WAIT
+    SDDL_REVISION_1
+    TOKEN_QUERY
+    TokenGroups
+    SE_GROUP_LOGON_ID
+
+    DisableThreadLibraryCalls
+    GetModuleFileNameW
+    CloseHandle
+    CancelIoEx
+    GetOverlappedResult
+    CreateEventW
+    SetEvent
+    WaitForMultipleObjects
+    WaitForSingleObject
+    ReadFile
+    WriteFile
+    CoIncrementMTAUsage
+    CoDecrementMTAUsage
+    ConnectNamedPipe
+    CreateNamedPipeW
+    DisconnectNamedPipe
+    LocalFree
+    ConvertSidToStringSidW
+    ConvertStringSecurityDescriptorToSecurityDescriptorW
+    GetTokenInformation
+    GetCurrentProcess
+    OpenProcessToken
