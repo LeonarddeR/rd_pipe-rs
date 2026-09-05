@@ -70,8 +70,11 @@ A shared helper module `tests/common/mod.rs` provides:
   `RegLoadAppKey` and redirects `HKEY_CURRENT_USER` to it via
   `RegOverridePredefKey`. The live registry is never read or written.
 - `FakeChannelMgr`, `FakeListener`, `FakeVirtualChannel` — minimal
-  `windows::core::implement` stubs for the host-side COM interfaces,
+  `windows_core::implement` stubs for the host-side COM interfaces,
   with `Mutex`-guarded event logs for assertions.
+- `bindings` — the generated `tests/common/bindings.rs` with the COM
+  interfaces, registry functions and constants the tests use. Regenerate
+  with `cargo bindgen` (`tools/bindgen/tests.txt` lists the names).
 - `connect_pipe_client` (a byte-mode pipe client is a plain
   `std::fs::File`), `read_exact_with_timeout`, `trigger_new_channel`,
   `channel_addr`, `pipe_address` — pipe and lifecycle plumbing.
