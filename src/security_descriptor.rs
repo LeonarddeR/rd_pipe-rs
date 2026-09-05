@@ -13,22 +13,25 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use tracing::{debug, error, instrument, trace};
-use windows::Win32::{
-	Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
-	Security::{
-		Authorization::{
-			ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-			SDDL_REVISION_1,
-		},
-		GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY,
-		TokenGroups,
-	},
-	System::{
-		SystemServices::SE_GROUP_LOGON_ID,
-		Threading::{GetCurrentProcess, OpenProcessToken},
-	},
+use windows_core::{BOOL, Error, HSTRING, PWSTR, Result, WIN32_ERROR};
+
+use crate::bindings::Windows::Win32::{
+	CloseHandle, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+	ERROR_NOT_FOUND, GetCurrentProcess, GetTokenInformation, HANDLE, HLOCAL, LocalFree,
+	OpenProcessToken, PSECURITY_DESCRIPTOR, SDDL_REVISION_1, SE_GROUP_LOGON_ID,
+	SECURITY_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TokenGroups,
 };
-use windows_core::{Error, HSTRING, PWSTR, Result};
+
+/// Memory allocated by Win32 on the local heap; freed with `LocalFree` on drop.
+pub(crate) struct LocalMem(pub(crate) HLOCAL);
+
+impl Drop for LocalMem {
+	fn drop(&mut self) {
+		unsafe {
+			LocalFree(self.0);
+		}
+	}
+}
 
 #[instrument]
 pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
@@ -39,27 +42,28 @@ pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> 
 	unsafe {
 		ConvertStringSecurityDescriptorToSecurityDescriptorW(
 			&HSTRING::from(sddl),
-			SDDL_REVISION_1,
+			SDDL_REVISION_1 as u32,
 			&mut security_descriptor,
 			None,
 		)
-	}?;
+	}
+	.ok()?;
 	Ok(SECURITY_ATTRIBUTES {
 		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
 		lpSecurityDescriptor: security_descriptor.0,
-		bInheritHandle: false.into(),
+		bInheritHandle: BOOL::from(false),
 	})
 }
 
 #[instrument]
-pub fn get_logon_sid() -> windows::core::Result<String> {
+pub fn get_logon_sid() -> Result<String> {
 	// SAFETY: Windows API calls for token manipulation. Token handle is properly closed
 	// in all code paths (success and failure) via explicit CloseHandle call.
 	unsafe {
 		// Open current process token
 		let mut token: HANDLE = HANDLE::default();
 		trace!("Opening process token");
-		OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+		OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY as u32, &mut token).ok()?;
 
 		let result = get_logon_sid_from_token(token);
 		// Always close the token handle, regardless of success or failure
@@ -68,26 +72,21 @@ pub fn get_logon_sid() -> windows::core::Result<String> {
 	}
 }
 
-unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<String> {
+unsafe fn get_logon_sid_from_token(token: HANDLE) -> Result<String> {
 	// SAFETY: All Windows API calls in this function work with validated buffers and handles.
 	// Memory allocated by ConvertSidToStringSidW is freed via LocalFree before return.
 	unsafe {
 		// First call to get buffer size
 		let mut len: u32 = 0;
 		trace!("Getting token information size");
-		GetTokenInformation(token, TokenGroups, None, 0, &mut len).unwrap_or_default();
+		let _ = GetTokenInformation(token, TokenGroups, None, 0, &mut len);
 
 		// u64-backed buffer keeps the TOKEN_GROUPS cast below properly aligned
 		let mut buffer = vec![0u64; (len as usize).div_ceil(size_of::<u64>())];
 		// Second call to get actual data
 		trace!("Getting token information, expecting size {}", len);
-		GetTokenInformation(
-			token,
-			TokenGroups,
-			Some(buffer.as_mut_ptr() as *mut _),
-			len,
-			&mut len,
-		)?;
+		GetTokenInformation(token, TokenGroups, Some(buffer.as_mut_ptr() as *mut _), len, &mut len)
+			.ok()?;
 
 		let groups = &*(buffer.as_ptr() as *const TOKEN_GROUPS);
 		let group_slice =
@@ -96,18 +95,17 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> windows::core::Result<Strin
 
 		for group in group_slice {
 			debug!("Group SID: {:?}", group.Sid);
-			if group.Attributes & SE_GROUP_LOGON_ID as u32 != 0 {
+			if group.Attributes & SE_GROUP_LOGON_ID != 0 {
 				debug!("Found logon SID");
 				let mut sid_str: PWSTR = PWSTR::default();
-				ConvertSidToStringSidW(group.Sid, &mut sid_str)?;
+				ConvertSidToStringSidW(group.Sid, &mut sid_str).ok()?;
+				let _sid_mem = LocalMem(HANDLE(sid_str.0.cast()));
 				debug!("Converted SID to string: {:?}", sid_str);
-				let ssid = sid_str.to_string();
-				LocalFree(Some(HLOCAL(sid_str.0.cast())));
-				return Ok(ssid?);
+				return Ok(sid_str.to_string()?);
 			}
 		}
 		error!("Logon SID not found");
-		Err(Error::from(ERROR_NOT_FOUND))
+		Err(Error::from(WIN32_ERROR(ERROR_NOT_FOUND as u32)))
 	}
 }
 
@@ -125,12 +123,10 @@ mod tests {
 		let attrs = result.unwrap();
 		assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
 		assert!(!attrs.lpSecurityDescriptor.is_null());
-		assert_eq!(attrs.bInheritHandle, false);
+		assert!(!attrs.bInheritHandle.as_bool());
 
 		// Clean up allocated memory
-		unsafe {
-			let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
-		}
+		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -155,9 +151,7 @@ mod tests {
 		assert!(!attrs.lpSecurityDescriptor.is_null());
 
 		// Clean up
-		unsafe {
-			let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
-		}
+		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -171,9 +165,7 @@ mod tests {
 		assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
 
 		// Clean up
-		unsafe {
-			let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
-		}
+		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -186,9 +178,7 @@ mod tests {
 		assert!(!attrs.lpSecurityDescriptor.is_null());
 
 		// Clean up
-		unsafe {
-			let _ = LocalFree(Some(HLOCAL(attrs.lpSecurityDescriptor)));
-		}
+		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]

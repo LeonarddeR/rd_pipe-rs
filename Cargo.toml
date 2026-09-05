@@ -38,8 +38,8 @@ panic = "abort"
 [dependencies]
 parking_lot = "0.12.5"
 tracing = "0.1.44"
-windows-core = "0.62.2"
-windows-registry = "0.6.1"
+windows-core = "0.100.0"
+windows-registry = "0.100.0"
 
 [dependencies.tracing-appender]
 version = "0.2.5"
@@ -55,29 +55,7 @@ features = [
     "tracing-log"
 ]
 
-[dependencies.windows]
-version = "0.62.2"
-features = [
-    "Win32_Foundation",
-    "Win32_Security_Authorization",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_Pipes",
-    "Win32_System_SystemServices",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Ole",
-    "Win32_System_RemoteDesktop",
-    "Win32_System_Threading",
-]
-
 [dev-dependencies]
 libloading = "0.9"
 tempfile = "3"
 serial_test = "4"
-
-[dev-dependencies.windows]
-version = "0.62.2"
-features = [
-    "Win32_System_Registry",
-]

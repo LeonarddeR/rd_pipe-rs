@@ -13,7 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use tracing::{debug, instrument, trace};
-use windows::core::GUID;
+use windows_core::GUID;
 use windows_registry::{Key, Transaction};
 
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC79FDE45BE9251FA72D4064DA3);

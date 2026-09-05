@@ -14,17 +14,11 @@
 
 use core::{ffi::c_void, fmt, mem::transmute, ptr::null_mut};
 use tracing::{debug, instrument, trace};
-use windows::{
-	Win32::{
-		Foundation::{CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_POINTER},
-		System::{
-			Com::{IClassFactory, IClassFactory_Impl},
-			RemoteDesktop::IWTSPlugin,
-		},
-	},
-	core::{Error, GUID, IUnknown, Interface as _, Result, implement},
+use windows_core::{BOOL, Error, GUID, IUnknown, Interface as _, Result, implement};
+
+use crate::bindings::Windows::Win32::{
+	CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_POINTER, IClassFactory, IClassFactory_Impl, IWTSPlugin,
 };
-use windows_core::BOOL;
 
 use crate::rd_pipe_plugin::RdPipePlugin;
 

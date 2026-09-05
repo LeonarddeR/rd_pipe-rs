@@ -27,10 +27,9 @@ fn dll_loads_and_exports_present() {
 	}
 }
 
+use common::bindings::Windows::Win32::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED, IClassFactory};
 use core::ffi::c_void;
-use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_UNEXPECTED};
-use windows::Win32::System::Com::IClassFactory;
-use windows::core::{GUID, Interface};
+use windows_core::{GUID, Interface};
 
 #[test]
 fn bad_clsid_returns_class_e_classnotavailable() {
@@ -75,7 +74,7 @@ fn fake_virtual_channel_records_writes() {
 	let (chan, state) = common::FakeVirtualChannel::new();
 	let payload = b"abc";
 	unsafe {
-		chan.Write(payload, None).unwrap();
+		chan.Write(payload.len() as u32, payload.as_ptr(), None).ok().unwrap();
 	}
 	assert_eq!(state.flat_writes(), b"abc");
 }

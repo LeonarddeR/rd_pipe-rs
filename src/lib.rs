@@ -12,12 +12,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code, clippy::all)]
+mod bindings;
 pub mod class_factory;
 pub mod overlapped;
 pub mod rd_pipe_plugin;
 pub mod registry;
 pub mod security_descriptor;
 
+use crate::bindings::Windows::Win32::{
+	CLASS_E_CLASSNOTAVAILABLE, DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH, DisableThreadLibraryCalls,
+	E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, GetModuleFileNameW, HINSTANCE, HMODULE,
+	IClassFactory, S_OK, UNICODE_STRING_MAX_CHARS,
+};
 use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
 use core::{ffi::c_void, str::FromStr};
 use rd_pipe_plugin::REG_PATH;
@@ -32,21 +39,7 @@ use std::{
 	sync::atomic::{AtomicIsize, Ordering},
 };
 use tracing::{debug, error, instrument, trace};
-use windows::{
-	Win32::{
-		Foundation::{
-			CLASS_E_CLASSNOTAVAILABLE, E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, HMODULE,
-			S_OK,
-		},
-		System::{
-			Com::IClassFactory,
-			LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW},
-			SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH, UNICODE_STRING_MAX_CHARS},
-		},
-	},
-	core::{GUID, HRESULT, Interface, PCWSTR},
-};
-use windows_core::BOOL;
+use windows_core::{BOOL, GUID, HRESULT, Interface, PCWSTR, PWSTR, WIN32_ERROR};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
@@ -60,7 +53,7 @@ static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
-	match reason {
+	match reason as i32 {
 		DLL_PROCESS_ATTACH => {
 			INSTANCE.store(hinst.0 as _, Ordering::Release);
 			// Set up logging
@@ -88,8 +81,8 @@ pub extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_vo
 				std::env::consts::ARCH,
 				log_level
 			);
-			match unsafe { DisableThreadLibraryCalls(hinst) } {
-				Ok(_) => trace!("Disabled thread library calls"),
+			match unsafe { DisableThreadLibraryCalls(hinst) }.ok() {
+				Ok(()) => trace!("Disabled thread library calls"),
 				Err(e) => {
 					error!("Failed to disable thread library calls: {:?}", e);
 					return false.into();
@@ -149,7 +142,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 	debug!("DllInstall called");
 	if cmd_line.is_null() {
 		error!("No command line provided");
-		return ERROR_INVALID_PARAMETER.into();
+		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
 	}
 	let arguments: String = match unsafe { cmd_line.to_string() } {
 		Ok(s) => {
@@ -158,19 +151,19 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 		}
 		Err(e) => {
 			error!("Couldn't convert arguments from PCWSTR: {}", e);
-			return ERROR_INVALID_PARAMETER.into();
+			return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
 		}
 	};
 	if arguments.is_empty() {
 		error!("No arguments provided");
-		return ERROR_INVALID_PARAMETER.into();
+		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
 	}
 	let arguments: Vec<&str> = arguments.split(' ').collect();
 	let commands = arguments[0].to_lowercase();
 	#[cfg(not(target_arch = "x86"))]
 	if commands.contains(CMD_CITRIX) {
 		error!("Citrix registration not supported for non-X86 builds");
-		return ERROR_INVALID_PARAMETER.into();
+		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
 	}
 	let scope_hkey =
 		if commands.contains(CMD_LOCAL_MACHINE) { LOCAL_MACHINE } else { CURRENT_USER };
@@ -178,16 +171,21 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 		if commands.contains(CMD_COM_SERVER) {
 			if arguments.len() == 1 {
 				error!("No channel names provided");
-				return ERROR_INVALID_PARAMETER.into();
+				return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
 			}
 			const MAX_MODULE_PATH: usize = UNICODE_STRING_MAX_CHARS as usize;
 			let mut file_name = vec![0u16; 256];
-			let instance = HMODULE(INSTANCE.load(Ordering::Acquire) as _);
+			let instance = HINSTANCE(INSTANCE.load(Ordering::Acquire) as _);
 			let path_string = loop {
-				let len = unsafe { GetModuleFileNameW(Some(instance), file_name.as_mut_slice()) }
-					as usize;
+				let len = unsafe {
+					GetModuleFileNameW(
+						Some(instance),
+						PWSTR(file_name.as_mut_ptr()),
+						file_name.len() as u32,
+					)
+				} as usize;
 				if len == 0 {
-					let e = windows::core::Error::from_thread();
+					let e = windows_core::Error::from_thread();
 					error!("Error calling GetModuleFileNameW: {}", e);
 					return e.into();
 				}
@@ -195,7 +193,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 					break String::from_utf16_lossy(&file_name[..len]);
 				}
 				if file_name.len() >= MAX_MODULE_PATH {
-					let e = windows::core::Error::from_thread();
+					let e = windows_core::Error::from_thread();
 					error!("Module path exceeds {} characters: {}", MAX_MODULE_PATH, e);
 					return e.into();
 				}

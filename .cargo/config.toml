@@ -1,0 +1,2 @@
+[alias]
+bindgen = "run --release --manifest-path tools/bindgen/Cargo.toml"
