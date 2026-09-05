@@ -231,9 +231,10 @@ enum PipeIo {
 /// Whether a failed pipe op means the client side is gone rather than a
 /// genuine IO error.
 fn is_disconnect(e: &Error) -> bool {
-	[ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED, ERROR_NO_DATA, ERROR_OPERATION_ABORTED]
-		.iter()
-		.any(|&code| e.code() == WIN32_ERROR(code as u32).into())
+	e.code() == WIN32_ERROR(ERROR_BROKEN_PIPE as u32).into()
+		|| e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into()
+		|| e.code() == WIN32_ERROR(ERROR_NO_DATA as u32).into()
+		|| e.code() == WIN32_ERROR(ERROR_OPERATION_ABORTED as u32).into()
 }
 
 /// Runs one overlapped pipe op via [`run_overlapped`], folding errors into
