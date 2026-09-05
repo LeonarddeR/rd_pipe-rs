@@ -21,14 +21,6 @@ use crate::bindings::Windows::Win32::{
 	WaitForMultipleObjects, WaitForSingleObject,
 };
 
-const WAIT_FIRST: u32 = WAIT_OBJECT_0 as u32;
-const WAIT_SECOND: u32 = WAIT_OBJECT_0 as u32 + 1;
-const WAIT_TIMED_OUT: u32 = WAIT_TIMEOUT as u32;
-
-pub(crate) fn is_io_pending(e: &Error) -> bool {
-	e.code() == WIN32_ERROR(ERROR_IO_PENDING as u32).into()
-}
-
 /// Owned Win32 handle, closed on drop. A `HANDLE` is a plain kernel object
 /// reference; using it from multiple threads is part of the Win32 contract,
 /// hence the `Send`/`Sync` impls.
@@ -96,9 +88,9 @@ impl Shutdown {
 
 	/// Waits up to `ms` for the shutdown event; true if it fired.
 	pub fn wait(&self, ms: u32) -> bool {
-		match unsafe { WaitForSingleObject(self.event.raw(), ms) } {
-			WAIT_FIRST => true,
-			WAIT_TIMED_OUT => false,
+		match unsafe { WaitForSingleObject(self.event.raw(), ms) } as i32 {
+			WAIT_OBJECT_0 => true,
+			WAIT_TIMEOUT => false,
 			_ => {
 				error!("Wait on shutdown event failed: {}", Error::from_thread());
 				true
@@ -135,13 +127,13 @@ pub unsafe fn wait_overlapped(
 ) -> Result<OverlappedWait> {
 	let handles = [overlapped.hEvent, shutdown.event.raw()];
 	let status = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
-	match status {
-		WAIT_FIRST => {
+	match status as i32 {
+		WAIT_OBJECT_0 => {
 			let mut bytes = 0u32;
 			unsafe { GetOverlappedResult(handle, overlapped, &mut bytes, false) }.ok()?;
 			Ok(OverlappedWait::Completed(bytes))
 		}
-		WAIT_SECOND => {
+		n if n == WAIT_OBJECT_0 + 1 => {
 			unsafe {
 				let _ = CancelIoEx(handle, Some(overlapped));
 				let mut bytes = 0u32;
@@ -181,7 +173,7 @@ where
 	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
 	match start(handle.raw(), &mut ov) {
 		Ok(n) => return Ok(OverlappedWait::Completed(n)),
-		Err(e) if is_io_pending(&e) => {}
+		Err(e) if e.code() == WIN32_ERROR(ERROR_IO_PENDING as u32).into() => {}
 		Err(e) => return Err(e),
 	}
 	unsafe { wait_overlapped(handle.raw(), &mut ov, shutdown) }
@@ -261,7 +253,7 @@ mod tests {
 		};
 		match started.ok() {
 			Ok(()) => {}
-			Err(e) if is_io_pending(&e) => {}
+			Err(e) if e.code() == WIN32_ERROR(ERROR_IO_PENDING as u32).into() => {}
 			Err(e) => panic!("ReadFile: {e}"),
 		}
 	}
