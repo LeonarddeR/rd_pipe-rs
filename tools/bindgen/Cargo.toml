@@ -1,0 +1,13 @@
+[package]
+name = "rd_pipe_bindgen"
+description = "Regenerates rd_pipe's committed windows-bindgen output"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+windows-bindgen = "0.100.0"
+
+# Drop this table once a published windows-default contains `IWTSVirtualChannel`.
+[patch.crates-io]
+windows-default = { git = "https://github.com/microsoft/windows-rs", rev = "cad85f9e122b8236f3619ab67b88a1e7242dcb7d" }
