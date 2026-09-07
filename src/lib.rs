@@ -12,7 +12,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code, clippy::all)]
+#[expect(
+	non_snake_case,
+	non_camel_case_types,
+	non_upper_case_globals,
+	clippy::upper_case_acronyms,
+	clippy::missing_transmute_annotations,
+	clippy::too_many_arguments
+)]
 mod bindings;
 pub mod class_factory;
 pub mod overlapped;

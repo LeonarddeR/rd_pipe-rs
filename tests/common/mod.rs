@@ -3,7 +3,12 @@
 
 #![allow(dead_code)]
 
-#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
+#[expect(
+	non_snake_case,
+	non_camel_case_types,
+	clippy::upper_case_acronyms,
+	clippy::missing_transmute_annotations
+)]
 pub mod bindings;
 
 use std::path::PathBuf;
