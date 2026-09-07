@@ -12,56 +12,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::os::windows::io::{AsRawHandle, HandleOrNull, OwnedHandle};
 use tracing::error;
 use windows_core::{Error, Result, WIN32_ERROR};
 
 use crate::bindings::Windows::Win32::{
-	CancelIoEx, CloseHandle, CreateEventW, ERROR_IO_PENDING, GetOverlappedResult, HANDLE, INFINITE,
-	INVALID_HANDLE_VALUE, OVERLAPPED, SetEvent, WAIT_OBJECT_0, WAIT_TIMEOUT,
-	WaitForMultipleObjects, WaitForSingleObject,
+	CancelIoEx, CreateEventW, ERROR_IO_PENDING, GetOverlappedResult, HANDLE, INFINITE, OVERLAPPED,
+	SetEvent, WAIT_OBJECT_0, WAIT_TIMEOUT, WaitForMultipleObjects, WaitForSingleObject,
 };
-
-/// Owned Win32 handle, closed on drop. A `HANDLE` is a plain kernel object
-/// reference; using it from multiple threads is part of the Win32 contract,
-/// hence the `Send`/`Sync` impls.
-#[derive(Debug)]
-pub struct OwnedHandle(HANDLE);
-
-unsafe impl Send for OwnedHandle {}
-unsafe impl Sync for OwnedHandle {}
-
-impl OwnedHandle {
-	/// Takes ownership of `handle`; it is closed when the wrapper drops.
-	///
-	/// # Safety
-	/// `handle` must be a valid handle owned by the caller; nothing else may
-	/// close it after this call.
-	pub unsafe fn new(handle: HANDLE) -> Self {
-		Self(handle)
-	}
-
-	pub fn raw(&self) -> HANDLE {
-		self.0
-	}
-}
-
-impl Drop for OwnedHandle {
-	fn drop(&mut self) {
-		if !self.0.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
-			unsafe {
-				let _ = CloseHandle(self.0);
-			}
-		}
-	}
-}
 
 /// Creates an unnamed manual-reset event; it stays signalled until reset.
 pub fn create_event() -> Result<OwnedHandle> {
 	let handle = unsafe { CreateEventW(None, true, false, None) };
-	if handle.0.is_null() {
-		return Err(Error::from_thread());
-	}
-	Ok(unsafe { OwnedHandle::new(handle) })
+	OwnedHandle::try_from(unsafe { HandleOrNull::from_raw_handle(handle.0) })
+		.map_err(|_| Error::from_thread())
 }
 
 /// Shutdown signal shared across threads: a manual-reset event that stays
@@ -77,7 +41,7 @@ impl Shutdown {
 	}
 
 	pub fn signal(&self) {
-		if let Err(e) = unsafe { SetEvent(self.event.raw()) }.ok() {
+		if let Err(e) = unsafe { SetEvent(HANDLE(self.event.as_raw_handle())) }.ok() {
 			error!("Failed to signal shutdown event: {}", e);
 		}
 	}
@@ -88,7 +52,7 @@ impl Shutdown {
 
 	/// Waits up to `ms` for the shutdown event; true if it fired.
 	pub fn wait(&self, ms: u32) -> bool {
-		match unsafe { WaitForSingleObject(self.event.raw(), ms) } as i32 {
+		match unsafe { WaitForSingleObject(HANDLE(self.event.as_raw_handle()), ms) } as i32 {
 			WAIT_OBJECT_0 => true,
 			WAIT_TIMEOUT => false,
 			_ => {
@@ -125,7 +89,7 @@ pub unsafe fn wait_overlapped(
 	overlapped: &mut OVERLAPPED,
 	shutdown: &Shutdown,
 ) -> Result<OverlappedWait> {
-	let handles = [overlapped.hEvent, shutdown.event.raw()];
+	let handles = [overlapped.hEvent, HANDLE(shutdown.event.as_raw_handle())];
 	let status = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
 	match status as i32 {
 		WAIT_OBJECT_0 => {
@@ -170,22 +134,23 @@ pub(crate) fn run_overlapped<F>(
 where
 	F: FnOnce(HANDLE, &mut OVERLAPPED) -> Result<u32>,
 {
-	let mut ov = OVERLAPPED { hEvent: op_event.raw(), ..Default::default() };
-	match start(handle.raw(), &mut ov) {
+	let raw = HANDLE(handle.as_raw_handle());
+	let mut ov = OVERLAPPED { hEvent: HANDLE(op_event.as_raw_handle()), ..Default::default() };
+	match start(raw, &mut ov) {
 		Ok(n) => return Ok(OverlappedWait::Completed(n)),
 		Err(e) if e.code() == WIN32_ERROR(ERROR_IO_PENDING as u32).into() => {}
 		Err(e) => return Err(e),
 	}
-	unsafe { wait_overlapped(handle.raw(), &mut ov, shutdown) }
+	unsafe { wait_overlapped(raw, &mut ov, shutdown) }
 }
 
 #[cfg(test)]
 pub(crate) mod test_util {
-	use super::OwnedHandle;
 	use crate::bindings::Windows::Win32::{
-		CreateNamedPipeW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-		INVALID_HANDLE_VALUE, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+		CreateNamedPipeW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+		PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 	};
+	use std::os::windows::io::{HandleOrInvalid, OwnedHandle};
 	use windows_core::{Error, HSTRING};
 
 	pub(crate) fn make_server(addr: &str) -> OwnedHandle {
@@ -201,12 +166,8 @@ pub(crate) mod test_util {
 				None,
 			)
 		};
-		assert!(
-			handle != INVALID_HANDLE_VALUE,
-			"CreateNamedPipeW failed: {:?}",
-			Error::from_thread()
-		);
-		unsafe { OwnedHandle::new(handle) }
+		OwnedHandle::try_from(unsafe { HandleOrInvalid::from_raw_handle(handle.0) })
+			.unwrap_or_else(|_| panic!("CreateNamedPipeW failed: {:?}", Error::from_thread()))
 	}
 
 	/// The instance exists before this is called, so the open never races
@@ -244,7 +205,7 @@ mod tests {
 	fn start_read(server: &OwnedHandle, ov: &mut OVERLAPPED, buf: &mut [u8]) {
 		let started = unsafe {
 			ReadFile(
-				server.raw(),
+				HANDLE(server.as_raw_handle()),
 				Some(buf.as_mut_ptr().cast()),
 				buf.len() as u32,
 				None,
@@ -269,10 +230,10 @@ mod tests {
 		client.write_all(b"ping").expect("client write");
 
 		let event = create_event().expect("event");
-		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
+		let mut ov = OVERLAPPED { hEvent: HANDLE(event.as_raw_handle()), ..Default::default() };
 		let mut buf = [0u8; 16];
 		start_read(&server, &mut ov, &mut buf);
-		match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
+		match unsafe { wait_overlapped(HANDLE(server.as_raw_handle()), &mut ov, &shutdown) } {
 			Ok(OverlappedWait::Completed(n)) => {
 				assert_eq!(&buf[..n as usize], b"ping");
 			}
@@ -291,7 +252,7 @@ mod tests {
 		connect_server(&server, &shutdown);
 
 		let event = create_event().expect("event");
-		let mut ov = OVERLAPPED { hEvent: event.raw(), ..Default::default() };
+		let mut ov = OVERLAPPED { hEvent: HANDLE(event.as_raw_handle()), ..Default::default() };
 		let mut buf = [0u8; 16];
 		start_read(&server, &mut ov, &mut buf);
 		std::thread::scope(|s| {
@@ -299,7 +260,7 @@ mod tests {
 				std::thread::sleep(std::time::Duration::from_millis(50));
 				shutdown.signal();
 			});
-			match unsafe { wait_overlapped(server.raw(), &mut ov, &shutdown) } {
+			match unsafe { wait_overlapped(HANDLE(server.as_raw_handle()), &mut ov, &shutdown) } {
 				Ok(OverlappedWait::Shutdown) => {}
 				other => panic!("expected Shutdown, got {other:?}"),
 			}

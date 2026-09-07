@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when they are stale. Until a published `windows-default` carries
   `tsvirtualchannels.h`, the helper reads its metadata from a pinned
   windows-rs commit; the DLL itself depends on crates.io releases only.
+- Kernel handles (pipe instance, events) are held in the standard
+  library's `OwnedHandle` instead of a crate-local wrapper.
 
 ## [1.0.0] - 2026-08-21
 

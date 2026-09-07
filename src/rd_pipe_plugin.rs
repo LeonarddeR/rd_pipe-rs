@@ -16,6 +16,7 @@ use core::slice;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fmt;
+use std::os::windows::io::{AsRawHandle, HandleOrInvalid, OwnedHandle};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Weak};
@@ -30,13 +31,13 @@ use crate::bindings::Windows::Win32::{
 	CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage, ConnectNamedPipe,
 	CreateNamedPipeW, DisconnectNamedPipe, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE,
 	ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, HANDLE, INVALID_HANDLE_VALUE,
-	IWTSListener, IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin, IWTSPlugin_Impl,
+	FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, HANDLE, IWTSListener,
+	IWTSListenerCallback, IWTSListenerCallback_Impl, IWTSPlugin, IWTSPlugin_Impl,
 	IWTSVirtualChannel, IWTSVirtualChannelCallback, IWTSVirtualChannelCallback_Impl,
 	IWTSVirtualChannelManager, OVERLAPPED, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
 	PIPE_WAIT, ReadFile, WriteFile,
 };
-use crate::overlapped::{OverlappedWait, OwnedHandle, Shutdown, create_event, run_overlapped};
+use crate::overlapped::{OverlappedWait, Shutdown, create_event, run_overlapped};
 use crate::security_descriptor::{LocalMem, get_logon_sid, security_attributes_from_sddl};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
@@ -301,7 +302,7 @@ fn write_pipe(
 /// Best-effort disconnect of the pipe instance; also the way a pending
 /// overlapped op on the same handle is kicked awake from another thread.
 fn disconnect_pipe(handle: &OwnedHandle, context: &str) {
-	if let Err(e) = unsafe { DisconnectNamedPipe(handle.raw()) }.ok() {
+	if let Err(e) = unsafe { DisconnectNamedPipe(HANDLE(handle.as_raw_handle())) }.ok() {
 		trace!("Error disconnecting pipe instance ({}): {}", context, e);
 	}
 }
@@ -380,12 +381,11 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 			Some(&attributes),
 		)
 	};
-	if handle == INVALID_HANDLE_VALUE {
+	OwnedHandle::try_from(unsafe { HandleOrInvalid::from_raw_handle(handle.0) }).map_err(|_| {
 		let e = Error::from_thread();
 		error!("Error while creating named pipe server: {}", e);
-		return Err(e);
-	}
-	Ok(unsafe { OwnedHandle::new(handle) })
+		e
+	})
 }
 
 /// Keeps the process-wide implicit MTA alive while held, so the pump's

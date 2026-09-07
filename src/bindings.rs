@@ -386,7 +386,6 @@ pub mod Windows {
 		}
 		impl windows_core::RuntimeName for IClassFactory {}
 		pub const INFINITE: u32 = 4294967295;
-		pub const INVALID_HANDLE_VALUE: HANDLE = HANDLE(-1 as _);
 		windows_core::imp::define_interface!(
 			IPropertyBag,
 			IPropertyBag_Vtbl,
