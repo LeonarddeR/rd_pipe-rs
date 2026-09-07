@@ -70,8 +70,11 @@ A shared helper module `tests/common/mod.rs` provides:
   `RegLoadAppKey` and redirects `HKEY_CURRENT_USER` to it via
   `RegOverridePredefKey`. The live registry is never read or written.
 - `FakeChannelMgr`, `FakeListener`, `FakeVirtualChannel` — minimal
-  `windows::core::implement` stubs for the host-side COM interfaces,
+  `windows_core::implement` stubs for the host-side COM interfaces,
   with `Mutex`-guarded event logs for assertions.
+- `bindings` — the generated `tests/common/bindings.rs` with the COM
+  interfaces, registry functions and constants the tests use. Regenerate
+  with `cargo bindgen` (`tools/bindgen/tests.txt` lists the names).
 - `connect_pipe_client` (a byte-mode pipe client is a plain
   `std::fs::File`), `read_exact_with_timeout`, `trigger_new_channel`,
   `channel_addr`, `pipe_address` — pipe and lifecycle plumbing.
@@ -83,13 +86,7 @@ Each `dvc_emulation` test is annotated `#[serial_test::serial]` because
 
 ### Known Build Issues
 
-**Important**: There is currently a dependency compatibility issue with `windows-future` version 0.3.2 and `windows-core` 0.62.2. This is a pre-existing issue in the repository that prevents compilation on Linux/non-Windows CI environments. The tests are designed to work on Windows environments where the proper dependencies are available.
-
-This issue affects:
-- `windows-future` crate attempting to use `IMarshal` and `marshaler` from `windows_core::imp`
-- Cross-platform build attempts
-
-The tests **will work correctly** on Windows with proper Visual Studio toolchain and Windows SDK installed.
+The crate and its tests only build on Windows with the MSVC toolchain: `windows-core` and the generated bindings target Windows alone, so cross-platform build attempts fail. The `tools/bindgen` generator itself is portable and runs in the Linux CI job.
 
 ### Prerequisites
 - Rust toolchain (stable)

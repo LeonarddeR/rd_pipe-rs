@@ -3,6 +3,14 @@
 
 #![allow(dead_code)]
 
+#[expect(
+	non_snake_case,
+	non_camel_case_types,
+	clippy::upper_case_acronyms,
+	clippy::missing_transmute_annotations
+)]
+pub mod bindings;
+
 use std::path::PathBuf;
 
 /// Resolve the path to the built `rd_pipe.dll` for the current Cargo profile and target.
@@ -66,13 +74,12 @@ pub fn dll_path() -> PathBuf {
 	}
 }
 
+use self::bindings::Windows::Win32::{
+	ACCESS_MASK, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegLoadAppKeyW, RegOverridePredefKey,
+};
 use std::io;
 use tempfile::NamedTempFile;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{
-	HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegLoadAppKeyW, RegOverridePredefKey,
-};
-use windows::core::PCWSTR;
+use windows_core::{HSTRING, WIN32_ERROR};
 
 /// RAII guard that:
 /// 1. Loads a private hive file via `RegLoadAppKeyW`.
@@ -104,25 +111,24 @@ impl HkcuOverride {
 		// Remove the empty file; RegLoadAppKey requires no file at the path.
 		std::fs::remove_file(&path)?;
 
-		let path_w: Vec<u16> =
-			path.as_os_str().to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-
 		let mut raw_hive = HKEY::default();
 		let rc = unsafe {
-			RegLoadAppKeyW(PCWSTR(path_w.as_ptr()), &mut raw_hive, KEY_ALL_ACCESS.0, 0, None)
+			RegLoadAppKeyW(
+				&HSTRING::from(path.as_path()),
+				&mut raw_hive,
+				ACCESS_MASK(KEY_ALL_ACCESS as u32),
+				0,
+				None,
+			)
 		};
-		if rc != ERROR_SUCCESS {
-			return Err(io::Error::from_raw_os_error(rc.0 as i32));
-		}
+		WIN32_ERROR(rc.0 as u32).ok()?;
 		// Take ownership of the handle via windows_registry::Key — its Drop
 		// will RegCloseKey it for us.
-		let hive = unsafe { windows_registry::Key::from_raw(raw_hive.0 as _) };
+		let hive = unsafe { windows_registry::Key::from_raw(raw_hive.0) };
 
 		let rc = unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, Some(raw_hive)) };
-		if rc != ERROR_SUCCESS {
-			// hive's Drop will close the handle.
-			return Err(io::Error::from_raw_os_error(rc.0 as i32));
-		}
+		// hive's Drop will close the handle on failure.
+		WIN32_ERROR(rc.0 as u32).ok()?;
 
 		Ok(Self { hive, _file: temp })
 	}
@@ -147,11 +153,15 @@ impl Drop for HkcuOverride {
 	}
 }
 
+use self::bindings::Windows::Win32::{
+	E_FAIL, E_NOTIMPL, E_UNEXPECTED, IPropertyBag, IWTSListener, IWTSListener_Impl,
+	IWTSListenerCallback, IWTSVirtualChannel, IWTSVirtualChannel_Impl, IWTSVirtualChannelManager,
+	IWTSVirtualChannelManager_Impl,
+};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows::Win32::System::RemoteDesktop::IWTSVirtualChannel;
-use windows::core::implement;
+use windows_core::{PCSTR, implement};
 
 /// Shared state exposed to the test for assertion after plugin calls.
 #[derive(Default)]
@@ -188,7 +198,7 @@ impl FakeVirtualChannel {
 	}
 }
 
-impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl for FakeVirtualChannel_Impl {
+impl IWTSVirtualChannel_Impl for FakeVirtualChannel_Impl {
 	fn Write(
 		&self,
 		cbsize: u32,
@@ -196,7 +206,7 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl for FakeVirt
 		_preserved: windows_core::Ref<windows_core::IUnknown>,
 	) -> windows_core::Result<()> {
 		if self.state.fail_writes.load(Ordering::SeqCst) {
-			return Err(windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL));
+			return Err(windows_core::Error::from_hresult(E_FAIL));
 		}
 		let buf = unsafe { std::slice::from_raw_parts(pbuffer, cbsize as usize) }.to_vec();
 		self.state.writes.lock().push(buf);
@@ -209,20 +219,14 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannel_Impl for FakeVirt
 	}
 }
 
-use windows::Win32::System::RemoteDesktop::{
-	IWTSListener, IWTSListenerCallback, IWTSVirtualChannelManager,
-};
-
 /// Stub listener — the plugin never calls `GetConfiguration` in our tests,
 /// but the interface requires an impl.
 #[implement(IWTSListener)]
 pub struct FakeListener;
 
-impl windows::Win32::System::RemoteDesktop::IWTSListener_Impl for FakeListener_Impl {
-	fn GetConfiguration(
-		&self,
-	) -> windows_core::Result<windows::Win32::System::Com::StructuredStorage::IPropertyBag> {
-		Err(windows_core::Error::from_hresult(windows::Win32::Foundation::E_NOTIMPL))
+impl IWTSListener_Impl for FakeListener_Impl {
+	fn GetConfiguration(&self) -> windows_core::Result<IPropertyBag> {
+		Err(windows_core::Error::from_hresult(E_NOTIMPL))
 	}
 }
 
@@ -253,21 +257,18 @@ impl FakeChannelMgr {
 	}
 }
 
-impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl for FakeChannelMgr_Impl {
+impl IWTSVirtualChannelManager_Impl for FakeChannelMgr_Impl {
 	fn CreateListener(
 		&self,
-		pszchannelname: &windows_core::PCSTR,
+		pszchannelname: *const i8,
 		_uflags: u32,
 		plistenercallback: windows_core::Ref<IWTSListenerCallback>,
 	) -> windows_core::Result<IWTSListener> {
-		let name = unsafe { pszchannelname.to_string() }.map_err(|_| {
-			windows_core::Error::from_hresult(windows::Win32::Foundation::E_UNEXPECTED)
-		})?;
+		let name = unsafe { PCSTR::from_raw(pszchannelname.cast()).to_string() }
+			.map_err(|_| windows_core::Error::from_hresult(E_UNEXPECTED))?;
 		let cb = plistenercallback
 			.as_ref()
-			.ok_or_else(|| {
-				windows_core::Error::from_hresult(windows::Win32::Foundation::E_UNEXPECTED)
-			})?
+			.ok_or_else(|| windows_core::Error::from_hresult(E_UNEXPECTED))?
 			.clone();
 
 		self.state.events.lock().push(MgrEvent::CreateListener { name: name.clone() });
@@ -277,10 +278,9 @@ impl windows::Win32::System::RemoteDesktop::IWTSVirtualChannelManager_Impl for F
 	}
 }
 
+use self::bindings::Windows::Win32::{IClassFactory, IWTSPlugin};
 use libloading::Library;
-use windows::Win32::System::Com::IClassFactory;
-use windows::Win32::System::RemoteDesktop::IWTSPlugin;
-use windows::core::{GUID, HRESULT, Interface};
+use windows_core::{GUID, HRESULT, Interface};
 pub const CLSID_RD_PIPE_PLUGIN: GUID = GUID::from_u128(0xD1F74DC7_9FDE_45BE_9251_FA72D4064DA3);
 
 pub type DllGetClassObjectFn = unsafe extern "system" fn(
@@ -420,7 +420,7 @@ pub fn read_rdpipe_log_tail() -> String {
 	}
 }
 
-use windows::Win32::System::RemoteDesktop::IWTSVirtualChannelCallback;
+use self::bindings::Windows::Win32::IWTSVirtualChannelCallback;
 use windows_core::{BOOL, BSTR};
 
 /// Drive `OnNewChannelConnection` on a captured listener callback and return
@@ -436,6 +436,7 @@ pub fn trigger_new_channel(
 	unsafe {
 		listener_cb
 			.OnNewChannelConnection(channel, &bstr, &mut accept, &mut chan_cb)
+			.ok()
 			.expect("OnNewChannelConnection failed");
 	}
 	assert!(accept.as_bool(), "plugin refused channel");
