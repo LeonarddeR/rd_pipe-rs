@@ -59,7 +59,6 @@
 
     DisableThreadLibraryCalls
     GetModuleFileNameW
-    CloseHandle
     CancelIoEx
     GetOverlappedResult
     CreateEventW

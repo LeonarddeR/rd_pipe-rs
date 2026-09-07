@@ -70,12 +70,11 @@ pub fn dll_path() -> PathBuf {
 }
 
 use self::bindings::Windows::Win32::{
-	ACCESS_MASK, ERROR_SUCCESS, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegLoadAppKeyW,
-	RegOverridePredefKey,
+	ACCESS_MASK, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegLoadAppKeyW, RegOverridePredefKey,
 };
 use std::io;
 use tempfile::NamedTempFile;
-use windows_core::PCWSTR;
+use windows_core::{HSTRING, WIN32_ERROR};
 
 /// RAII guard that:
 /// 1. Loads a private hive file via `RegLoadAppKeyW`.
@@ -107,31 +106,24 @@ impl HkcuOverride {
 		// Remove the empty file; RegLoadAppKey requires no file at the path.
 		std::fs::remove_file(&path)?;
 
-		let path_w: Vec<u16> =
-			path.as_os_str().to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-
 		let mut raw_hive = HKEY::default();
 		let rc = unsafe {
 			RegLoadAppKeyW(
-				PCWSTR(path_w.as_ptr()),
+				&HSTRING::from(path.as_path()),
 				&mut raw_hive,
 				ACCESS_MASK(KEY_ALL_ACCESS as u32),
 				0,
 				None,
 			)
 		};
-		if rc.0 != ERROR_SUCCESS {
-			return Err(io::Error::from_raw_os_error(rc.0));
-		}
+		WIN32_ERROR(rc.0 as u32).ok()?;
 		// Take ownership of the handle via windows_registry::Key — its Drop
 		// will RegCloseKey it for us.
 		let hive = unsafe { windows_registry::Key::from_raw(raw_hive.0) };
 
 		let rc = unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, Some(raw_hive)) };
-		if rc.0 != ERROR_SUCCESS {
-			// hive's Drop will close the handle.
-			return Err(io::Error::from_raw_os_error(rc.0));
-		}
+		// hive's Drop will close the handle on failure.
+		WIN32_ERROR(rc.0 as u32).ok()?;
 
 		Ok(Self { hive, _file: temp })
 	}

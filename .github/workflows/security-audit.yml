@@ -8,12 +8,9 @@ on:
     branches:
       - master
     paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - "tools/bindgen/Cargo.toml"
-      - "tools/bindgen/Cargo.lock"
-      - "tools/bindgen/deny.toml"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/deny.toml"
       - ".github/workflows/security-audit.yml"
   schedule:
     - cron: "0 6 * * 1"

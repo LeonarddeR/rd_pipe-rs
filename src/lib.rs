@@ -39,7 +39,7 @@ use std::{
 	sync::atomic::{AtomicIsize, Ordering},
 };
 use tracing::{debug, error, instrument, trace};
-use windows_core::{BOOL, GUID, HRESULT, Interface, PCWSTR, PWSTR};
+use windows_core::{BOOL, Error, GUID, HRESULT, Interface, PCWSTR, PWSTR};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
@@ -185,7 +185,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 					)
 				} as usize;
 				if len == 0 {
-					let e = windows_core::Error::from_thread();
+					let e = Error::from_thread();
 					error!("Error calling GetModuleFileNameW: {}", e);
 					return e.into();
 				}
@@ -193,7 +193,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 					break String::from_utf16_lossy(&file_name[..len]);
 				}
 				if file_name.len() >= MAX_MODULE_PATH {
-					let e = windows_core::Error::from_thread();
+					let e = Error::from_thread();
 					error!("Module path exceeds {} characters: {}", MAX_MODULE_PATH, e);
 					return e.into();
 				}

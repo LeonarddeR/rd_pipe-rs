@@ -48,9 +48,9 @@ jobs:
         with:
           workspaces: tools/bindgen
       - name: Regenerate bindings
-        run: cargo bindgen
+        run: cargo bindgen --locked
       - name: Check generated files are current
-        run: git diff --exit-code -- src/bindings.rs tests/common/bindings.rs
+        run: git diff --exit-code
 
   test:
     name: Test (${{ matrix.name }})

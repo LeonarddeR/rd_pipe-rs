@@ -12,18 +12,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::ops::Deref;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use tracing::{debug, error, instrument, trace};
 use windows_core::{BOOL, HSTRING, PWSTR, Result, WIN32_ERROR};
 
 use crate::bindings::Windows::Win32::{
-	CloseHandle, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-	ERROR_NOT_FOUND, GetCurrentProcess, GetTokenInformation, HANDLE, HLOCAL, LocalFree,
-	OpenProcessToken, PSECURITY_DESCRIPTOR, SDDL_REVISION_1, SE_GROUP_LOGON_ID,
-	SECURITY_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TokenGroups,
+	ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, ERROR_NOT_FOUND,
+	GetCurrentProcess, GetTokenInformation, HANDLE, HLOCAL, LocalFree, OpenProcessToken,
+	PSECURITY_DESCRIPTOR, SDDL_REVISION_1, SE_GROUP_LOGON_ID, SECURITY_ATTRIBUTES, TOKEN_GROUPS,
+	TOKEN_QUERY, TokenGroups,
 };
 
 /// Memory allocated by Win32 on the local heap; freed with `LocalFree` on drop.
-pub(crate) struct LocalMem(pub(crate) HLOCAL);
+struct LocalMem(HLOCAL);
 
 impl Drop for LocalMem {
 	fn drop(&mut self) {
@@ -33,12 +35,24 @@ impl Drop for LocalMem {
 	}
 }
 
+/// `SECURITY_ATTRIBUTES` whose security descriptor is freed when the value drops.
+pub struct SecurityAttributes {
+	attributes: SECURITY_ATTRIBUTES,
+	_descriptor: LocalMem,
+}
+
+impl Deref for SecurityAttributes {
+	type Target = SECURITY_ATTRIBUTES;
+
+	fn deref(&self) -> &SECURITY_ATTRIBUTES {
+		&self.attributes
+	}
+}
+
 #[instrument]
-pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> {
+pub fn security_attributes_from_sddl(sddl: &str) -> Result<SecurityAttributes> {
 	trace!("Converting SDDL to security descriptor: {}", sddl);
 	let mut security_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
-	// SAFETY: ConvertStringSecurityDescriptorToSecurityDescriptorW allocates memory for the
-	// security descriptor which must be freed with LocalFree. Caller is responsible for cleanup.
 	unsafe {
 		ConvertStringSecurityDescriptorToSecurityDescriptorW(
 			&HSTRING::from(sddl),
@@ -48,42 +62,31 @@ pub fn security_attributes_from_sddl(sddl: &str) -> Result<SECURITY_ATTRIBUTES> 
 		)
 	}
 	.ok()?;
-	Ok(SECURITY_ATTRIBUTES {
-		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-		lpSecurityDescriptor: security_descriptor.0,
-		bInheritHandle: BOOL::from(false),
+	Ok(SecurityAttributes {
+		attributes: SECURITY_ATTRIBUTES {
+			nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+			lpSecurityDescriptor: security_descriptor.0,
+			bInheritHandle: BOOL::from(false),
+		},
+		_descriptor: LocalMem(HANDLE(security_descriptor.0)),
 	})
 }
 
 #[instrument]
 pub fn get_logon_sid() -> Result<String> {
-	// SAFETY: Windows API calls for token manipulation. Token handle is properly closed
-	// in all code paths (success and failure) via explicit CloseHandle call.
 	unsafe {
-		// Open current process token
 		let mut token: HANDLE = HANDLE::default();
 		trace!("Opening process token");
 		OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY as u32, &mut token).ok()?;
+		let token = OwnedHandle::from_raw_handle(token.0);
+		let token = HANDLE(token.as_raw_handle());
 
-		let result = get_logon_sid_from_token(token);
-		// Always close the token handle, regardless of success or failure
-		let _ = CloseHandle(token);
-		result
-	}
-}
-
-unsafe fn get_logon_sid_from_token(token: HANDLE) -> Result<String> {
-	// SAFETY: All Windows API calls in this function work with validated buffers and handles.
-	// Memory allocated by ConvertSidToStringSidW is freed via LocalFree before return.
-	unsafe {
-		// First call to get buffer size
 		let mut len: u32 = 0;
 		trace!("Getting token information size");
 		let _ = GetTokenInformation(token, TokenGroups, None, 0, &mut len);
 
 		// u64-backed buffer keeps the TOKEN_GROUPS cast below properly aligned
 		let mut buffer = vec![0u64; (len as usize).div_ceil(size_of::<u64>())];
-		// Second call to get actual data
 		trace!("Getting token information, expecting size {}", len);
 		GetTokenInformation(token, TokenGroups, Some(buffer.as_mut_ptr() as *mut _), len, &mut len)
 			.ok()?;
@@ -124,9 +127,6 @@ mod tests {
 		assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
 		assert!(!attrs.lpSecurityDescriptor.is_null());
 		assert!(!attrs.bInheritHandle.as_bool());
-
-		// Clean up allocated memory
-		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -149,9 +149,6 @@ mod tests {
 		assert!(result.is_ok());
 		let attrs = result.unwrap();
 		assert!(!attrs.lpSecurityDescriptor.is_null());
-
-		// Clean up
-		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -163,9 +160,6 @@ mod tests {
 		assert!(result.is_ok());
 		let attrs = result.unwrap();
 		assert_eq!(attrs.nLength, std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32);
-
-		// Clean up
-		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]
@@ -176,9 +170,6 @@ mod tests {
 		assert!(result.is_ok());
 		let attrs = result.unwrap();
 		assert!(!attrs.lpSecurityDescriptor.is_null());
-
-		// Clean up
-		let _sd = LocalMem(HANDLE(attrs.lpSecurityDescriptor));
 	}
 
 	#[test]

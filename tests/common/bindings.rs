@@ -97,7 +97,6 @@ pub mod Windows {
 			pub Mid32: u32,
 		}
 		pub const ERROR_PIPE_NOT_CONNECTED: i32 = 233;
-		pub const ERROR_SUCCESS: i32 = 0;
 		pub const E_FAIL: windows_core::HRESULT = windows_core::HRESULT(0x80004005_u32 as _);
 		pub const E_NOTIMPL: windows_core::HRESULT = windows_core::HRESULT(0x80004001_u32 as _);
 		pub const E_UNEXPECTED: windows_core::HRESULT = windows_core::HRESULT(0x8000FFFF_u32 as _);

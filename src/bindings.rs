@@ -9,11 +9,6 @@ pub mod Windows {
 			unsafe { CancelIoEx(hfile, lpoverlapped.unwrap_or(core::mem::zeroed()) as _) }
 		}
 		#[inline]
-		pub unsafe fn CloseHandle(hobject: HANDLE) -> windows_core::BOOL {
-			windows_core::link!("kernel32.dll" "system" fn CloseHandle(hobject : HANDLE) -> windows_core::BOOL);
-			unsafe { CloseHandle(hobject) }
-		}
-		#[inline]
 		pub unsafe fn CoDecrementMTAUsage(cookie: CO_MTA_USAGE_COOKIE) -> windows_core::HRESULT {
 			windows_core::link!("ole32.dll" "system" fn CoDecrementMTAUsage(cookie : CO_MTA_USAGE_COOKIE) -> windows_core::HRESULT);
 			unsafe { CoDecrementMTAUsage(cookie) }

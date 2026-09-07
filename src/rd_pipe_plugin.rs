@@ -38,7 +38,7 @@ use crate::bindings::Windows::Win32::{
 	PIPE_WAIT, ReadFile, WriteFile,
 };
 use crate::overlapped::{OverlappedWait, Shutdown, create_event, run_overlapped};
-use crate::security_descriptor::{LocalMem, get_logon_sid, security_attributes_from_sddl};
+use crate::security_descriptor::{get_logon_sid, security_attributes_from_sddl};
 
 pub const REG_PATH: &str = r#"Software\Classes\CLSID\{D1F74DC7-9FDE-45BE-9251-FA72D4064DA3}"#;
 const REG_VALUE_CHANNEL_NAMES: &str = "ChannelNames";
@@ -371,7 +371,6 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 			error!("Can't create security attributes, {}", e);
 			e
 		})?;
-		let _sd = LocalMem(HANDLE(attributes.lpSecurityDescriptor));
 		CreateNamedPipeW(
 			&HSTRING::from(addr),
 			(FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_ACCESS_DUPLEX) as u32,
@@ -380,7 +379,7 @@ fn create_pipe_instance(addr: &str, sddl: &str) -> Result<OwnedHandle> {
 			PIPE_BUFFER_SIZE,
 			PIPE_BUFFER_SIZE,
 			0,
-			Some(&attributes),
+			Some(&*attributes),
 		)
 	};
 	OwnedHandle::try_from(unsafe { HandleOrInvalid::from_raw_handle(handle.0) }).map_err(|_| {

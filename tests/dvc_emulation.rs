@@ -14,10 +14,7 @@ use std::time::{Duration, Instant};
 use windows_core::WIN32_ERROR;
 
 /// Forwards `data` to the plugin's `OnDataReceived` as length and pointer.
-unsafe fn on_data_received(
-	cb: &IWTSVirtualChannelCallback,
-	data: &[u8],
-) -> windows_core::Result<()> {
+fn on_data_received(cb: &IWTSVirtualChannelCallback, data: &[u8]) -> windows_core::Result<()> {
 	unsafe { cb.OnDataReceived(data.len() as u32, data.as_ptr()) }.ok()
 }
 
@@ -171,9 +168,7 @@ fn channel_to_pipe_round_trip() {
 
 	// Push data via OnDataReceived -> plugin writes to pipe -> client reads.
 	let payload = b"world";
-	unsafe {
-		on_data_received(&fx.chan_cb, payload).expect("OnDataReceived");
-	}
+	on_data_received(&fx.chan_cb, payload).expect("OnDataReceived");
 
 	let got = common::read_exact_with_timeout(&client, payload.len(), Duration::from_secs(5))
 		.expect("read");
@@ -272,7 +267,7 @@ fn on_close_releases_pipe_writer() {
 	let mut last = None;
 	assert!(
 		wait_until(Duration::from_secs(5), || {
-			let result = unsafe { on_data_received(&fx.chan_cb, b"after-close") };
+			let result = on_data_received(&fx.chan_cb, b"after-close");
 			let released = matches!(
 				&result,
 				Err(e) if e.code() == WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into()
@@ -356,9 +351,7 @@ fn pipe_client_can_reconnect_after_disconnect() {
 	);
 
 	// Channel -> pipe still pumps after the reconnect.
-	unsafe {
-		on_data_received(&fx.chan_cb, b"back").expect("OnDataReceived after reconnect");
-	}
+	on_data_received(&fx.chan_cb, b"back").expect("OnDataReceived after reconnect");
 	let got = common::read_exact_with_timeout(&client2, 4, Duration::from_secs(5))
 		.expect("read after reconnect");
 	assert_eq!(&got, b"back");
@@ -386,7 +379,7 @@ fn stalled_client_disconnected_at_cap() {
 	let mut disconnected = false;
 	for _ in 0..1000 {
 		let started = Instant::now();
-		let result = unsafe { on_data_received(&fx.chan_cb, &chunk) };
+		let result = on_data_received(&fx.chan_cb, &chunk);
 		let elapsed = started.elapsed();
 		assert!(
 			elapsed < Duration::from_secs(2),
@@ -426,17 +419,13 @@ fn oversized_chunk_forwarded() {
 	let client = fx.connect_client_and_wait_for_xon();
 
 	let oversized: Vec<u8> = (0..256 * 1024).map(|i| (i % 256) as u8).collect();
-	unsafe {
-		on_data_received(&fx.chan_cb, &oversized).expect("OnDataReceived for oversized chunk");
-	}
+	on_data_received(&fx.chan_cb, &oversized).expect("OnDataReceived for oversized chunk");
 	let got = common::read_exact_with_timeout(&client, oversized.len(), Duration::from_secs(10))
 		.expect("read oversized chunk");
 	assert_eq!(got, oversized, "oversized chunk was not forwarded intact");
 
 	// Channel still pumps normally after the large write.
-	unsafe {
-		on_data_received(&fx.chan_cb, b"still-alive").expect("OnDataReceived after oversized");
-	}
+	on_data_received(&fx.chan_cb, b"still-alive").expect("OnDataReceived after oversized");
 	let tail =
 		common::read_exact_with_timeout(&client, b"still-alive".len(), Duration::from_secs(5))
 			.expect("read after oversized");
@@ -461,10 +450,8 @@ fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	// Two max-size chunks: the first fills the outbound pipe buffer, the
 	// second parks the writer thread in a pending overlapped write.
 	let chunk = vec![0xC3u8; 64 * 1024];
-	unsafe {
-		on_data_received(&fx.chan_cb, &chunk).expect("first OnDataReceived");
-		on_data_received(&fx.chan_cb, &chunk).expect("second OnDataReceived");
-	}
+	on_data_received(&fx.chan_cb, &chunk).expect("first OnDataReceived");
+	on_data_received(&fx.chan_cb, &chunk).expect("second OnDataReceived");
 	// Give the writer time to reach the pending write before closing.
 	std::thread::sleep(Duration::from_millis(100));
 
@@ -481,7 +468,7 @@ fn on_close_with_stalled_client_severs_after_drain_timeout() {
 	);
 
 	// The writer slot is gone as well.
-	let r = unsafe { on_data_received(&fx.chan_cb, b"\xab") };
+	let r = on_data_received(&fx.chan_cb, b"\xab");
 	assert!(
 		matches!(
 			r,
@@ -520,9 +507,7 @@ fn on_close_drains_queued_data_to_reading_client() {
 	let total = 3 * 64 * 1024;
 	let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
 	for part in payload.chunks(64 * 1024) {
-		unsafe {
-			on_data_received(&fx.chan_cb, part).expect("OnDataReceived");
-		}
+		on_data_received(&fx.chan_cb, part).expect("OnDataReceived");
 	}
 
 	unsafe {
@@ -552,7 +537,7 @@ fn many_small_chunks_below_budget_not_disconnected() {
 
 	let chunk = [0x5Au8; 100];
 	for i in 0..2000 {
-		let result = unsafe { on_data_received(&fx.chan_cb, &chunk) };
+		let result = on_data_received(&fx.chan_cb, &chunk);
 		assert!(result.is_ok(), "send {i} tripped the stall gate: {result:?}");
 	}
 
@@ -598,7 +583,7 @@ fn on_close_terminates_reader_cooperatively_while_client_connected() {
 
 	// Subsequent OnDataReceived must fail with ERROR_PIPE_NOT_CONNECTED
 	// (writer slot released synchronously by OnClose).
-	let r = unsafe { on_data_received(&fx.chan_cb, b"\xab") };
+	let r = on_data_received(&fx.chan_cb, b"\xab");
 	assert!(
 		matches!(
 			r,
