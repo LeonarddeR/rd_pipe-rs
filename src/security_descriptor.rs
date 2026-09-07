@@ -13,7 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use tracing::{debug, error, instrument, trace};
-use windows_core::{BOOL, Error, HSTRING, PWSTR, Result, WIN32_ERROR};
+use windows_core::{BOOL, HSTRING, PWSTR, Result, WIN32_ERROR};
 
 use crate::bindings::Windows::Win32::{
 	CloseHandle, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -105,7 +105,7 @@ unsafe fn get_logon_sid_from_token(token: HANDLE) -> Result<String> {
 			}
 		}
 		error!("Logon SID not found");
-		Err(Error::from(WIN32_ERROR(ERROR_NOT_FOUND as u32)))
+		Err(WIN32_ERROR(ERROR_NOT_FOUND as u32).into())
 	}
 }
 

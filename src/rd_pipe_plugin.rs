@@ -655,7 +655,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 		let mut writer_lock = self.writer_slot.lock();
 		let Some(queue) = writer_lock.as_ref() else {
 			debug!("Data received without an open named pipe");
-			return Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)));
+			return Err(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into());
 		};
 		let backlog_bytes = queue.queued_bytes.load(Ordering::Relaxed);
 		let backlog_chunks = queue.queued_chunks.load(Ordering::Relaxed);
@@ -670,7 +670,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			if let Some(handle) = self.pipe_handle.upgrade() {
 				disconnect_pipe(&handle, "stalled client");
 			}
-			return Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)));
+			return Err(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into());
 		}
 		// Increments must precede the send: the writer decrements after recv.
 		queue.queued_bytes.fetch_add(chunk.len(), Ordering::Relaxed);
@@ -680,7 +680,7 @@ impl IWTSVirtualChannelCallback_Impl for RdPipeChannelCallback_Impl {
 			Err(_) => {
 				debug!("Pipe writer gone while queueing data");
 				writer_lock.take();
-				Err(Error::from(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32)))
+				Err(WIN32_ERROR(ERROR_PIPE_NOT_CONNECTED as u32).into())
 			}
 		}
 	}
@@ -786,6 +786,6 @@ mod tests {
 	fn operation_aborted_is_a_disconnect() {
 		// A pending read/write aborted by a cross-thread `DisconnectNamedPipe`
 		// (e.g. the stalled-client path) completes with ERROR_OPERATION_ABORTED.
-		assert!(is_disconnect(&Error::from(WIN32_ERROR(ERROR_OPERATION_ABORTED as u32))));
+		assert!(is_disconnect(&WIN32_ERROR(ERROR_OPERATION_ABORTED as u32).into()));
 	}
 }
