@@ -22,8 +22,8 @@ pub mod security_descriptor;
 
 use crate::bindings::Windows::Win32::{
 	CLASS_E_CLASSNOTAVAILABLE, DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH, DisableThreadLibraryCalls,
-	E_POINTER, E_UNEXPECTED, ERROR_INVALID_PARAMETER, GetModuleFileNameW, HINSTANCE, HMODULE,
-	IClassFactory, S_OK, UNICODE_STRING_MAX_CHARS,
+	E_INVALIDARG, E_POINTER, E_UNEXPECTED, GetModuleFileNameW, HINSTANCE, HMODULE, IClassFactory,
+	S_OK, UNICODE_STRING_MAX_CHARS,
 };
 use crate::{class_factory::ClassFactory, registry::CLSID_RD_PIPE_PLUGIN};
 use core::{ffi::c_void, str::FromStr};
@@ -39,7 +39,7 @@ use std::{
 	sync::atomic::{AtomicIsize, Ordering},
 };
 use tracing::{debug, error, instrument, trace};
-use windows_core::{BOOL, GUID, HRESULT, Interface, PCWSTR, PWSTR, WIN32_ERROR};
+use windows_core::{BOOL, GUID, HRESULT, Interface, PCWSTR, PWSTR};
 use windows_registry::{self, CURRENT_USER, LOCAL_MACHINE};
 
 const REG_VALUE_LOG_LEVEL: &str = "LogLevel";
@@ -142,7 +142,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 	debug!("DllInstall called");
 	if cmd_line.is_null() {
 		error!("No command line provided");
-		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
+		return E_INVALIDARG;
 	}
 	let arguments: String = match unsafe { cmd_line.to_string() } {
 		Ok(s) => {
@@ -151,19 +151,19 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 		}
 		Err(e) => {
 			error!("Couldn't convert arguments from PCWSTR: {}", e);
-			return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
+			return E_INVALIDARG;
 		}
 	};
 	if arguments.is_empty() {
 		error!("No arguments provided");
-		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
+		return E_INVALIDARG;
 	}
 	let arguments: Vec<&str> = arguments.split(' ').collect();
 	let commands = arguments[0].to_lowercase();
 	#[cfg(not(target_arch = "x86"))]
 	if commands.contains(CMD_CITRIX) {
 		error!("Citrix registration not supported for non-X86 builds");
-		return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
+		return E_INVALIDARG;
 	}
 	let scope_hkey =
 		if commands.contains(CMD_LOCAL_MACHINE) { LOCAL_MACHINE } else { CURRENT_USER };
@@ -171,7 +171,7 @@ pub extern "system" fn DllInstall(install: BOOL, cmd_line: PCWSTR) -> HRESULT {
 		if commands.contains(CMD_COM_SERVER) {
 			if arguments.len() == 1 {
 				error!("No channel names provided");
-				return WIN32_ERROR(ERROR_INVALID_PARAMETER as u32).into();
+				return E_INVALIDARG;
 			}
 			const MAX_MODULE_PATH: usize = UNICODE_STRING_MAX_CHARS as usize;
 			let mut file_name = vec![0u16; 256];

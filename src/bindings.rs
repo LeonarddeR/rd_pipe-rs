@@ -262,13 +262,13 @@ pub mod Windows {
 		pub const DLL_PROCESS_ATTACH: i32 = 1;
 		pub const DLL_PROCESS_DETACH: i32 = 0;
 		pub const ERROR_BROKEN_PIPE: i32 = 109;
-		pub const ERROR_INVALID_PARAMETER: i32 = 87;
 		pub const ERROR_IO_PENDING: i32 = 997;
 		pub const ERROR_NOT_FOUND: i32 = 1168;
 		pub const ERROR_NO_DATA: i32 = 232;
 		pub const ERROR_OPERATION_ABORTED: i32 = 995;
 		pub const ERROR_PIPE_CONNECTED: i32 = 535;
 		pub const ERROR_PIPE_NOT_CONNECTED: i32 = 233;
+		pub const E_INVALIDARG: windows_core::HRESULT = windows_core::HRESULT(0x80070057_u32 as _);
 		pub const E_NOINTERFACE: windows_core::HRESULT = windows_core::HRESULT(0x80004002_u32 as _);
 		pub const E_POINTER: windows_core::HRESULT = windows_core::HRESULT(0x80004003_u32 as _);
 		pub const E_UNEXPECTED: windows_core::HRESULT = windows_core::HRESULT(0x8000FFFF_u32 as _);
