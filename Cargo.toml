@@ -38,7 +38,7 @@ panic = "abort"
 [dependencies]
 parking_lot = "0.12.5"
 tracing = "0.1.44"
-windows-core = "0.62.2"
+windows-core = "0.100.0"
 windows-registry = "0.6.1"
 
 [dependencies.tracing-appender]
