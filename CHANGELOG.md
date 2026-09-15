@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-15
+
 ### Changed
 
 - Moved from the `windows` 0.62 umbrella crate to `windows-core` and
